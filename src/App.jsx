@@ -350,7 +350,7 @@ function PrismLogo() {
   )
 }
 
-const BACKEND = 'http://localhost:3001'
+const BACKEND = 'https://prism-backend-8ac5.onrender.com'
 
 export default function App() {
   const [stage, setStage] = useState('onboarding')

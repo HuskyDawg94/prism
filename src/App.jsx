@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import '@fontsource/dm-mono'
 import { Analytics } from '@vercel/analytics/react'
+import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 
 const COLORS = {
   bg: '#080c0f',
@@ -256,9 +257,9 @@ const styles = {
   btn: (variant) => ({
     padding: '8px 16px',
     borderRadius: '6px',
-    border: `1px solid ${variant === 'primary' ? COLORS.accent : COLORS.border2}`,
-    background: variant === 'primary' ? 'rgba(74,242,161,0.1)' : 'transparent',
-    color: variant === 'primary' ? COLORS.accent : COLORS.muted,
+    border: `1px solid ${variant === 'primary' ? COLORS.accent : variant === 'danger' ? COLORS.red : COLORS.border2}`,
+    background: variant === 'primary' ? 'rgba(74,242,161,0.1)' : variant === 'danger' ? 'rgba(255,95,95,0.1)' : 'transparent',
+    color: variant === 'primary' ? COLORS.accent : variant === 'danger' ? COLORS.red : COLORS.muted,
     fontFamily: '"DM Mono", monospace',
     fontSize: '12px',
     cursor: 'pointer',
@@ -354,26 +355,60 @@ function PrismLogo() {
 const BACKEND = 'https://prism-backend-8ac5.onrender.com'
 
 export default function App() {
-  const [stage, setStage] = useState('onboarding')
+  const [stage, setStage] = useState(() => {
+    const savedPapers = localStorage.getItem('prism_papers')
+    if (savedPapers && JSON.parse(savedPapers).length > 0) return 'results'
+    return 'onboarding'
+  })
   const [activePanel, setActivePanel] = useState('overview')
-  const [query, setQuery] = useState('')
-  const [proposedTerms, setProposedTerms] = useState([])
-  const [papers, setPapers] = useState([])
+  const [query, setQuery] = useState(() => localStorage.getItem('prism_query') || '')
+  const [proposedTerms, setProposedTerms] = useState(() => {
+    const saved = localStorage.getItem('prism_terms')
+    return saved ? JSON.parse(saved) : []
+  })
+  const [papers, setPapers] = useState(() => {
+    const saved = localStorage.getItem('prism_papers')
+    return saved ? JSON.parse(saved) : []
+  })
+  const [analysis, setAnalysis] = useState(() => {
+    const saved = localStorage.getItem('prism_analysis')
+    return saved ? JSON.parse(saved) : {}
+  })
+  const [summary, setSummary] = useState(() => localStorage.getItem('prism_summary') || '')
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
-  const [analysis, setAnalysis] = useState({})
-  const [summary, setSummary] = useState('')
   const [paperCount, setPaperCount] = useState(50)
   const [processLog, setProcessLog] = useState([])
-  const [researcherProfile, setResearcherProfile] = useState({
-    name: '',
-    institution: '',
-    careerStage: 'undergraduate',
-    methods: [],
-    domains: [],
-    customMethods: '',
-    customDomains: '',
+  const [researcherProfile, setResearcherProfile] = useState(() => {
+    const saved = localStorage.getItem('prism_profile')
+    return saved ? JSON.parse(saved) : {
+      name: '',
+      institution: '',
+      careerStage: 'undergraduate',
+      methods: [],
+      domains: [],
+      customMethods: '',
+      customDomains: '',
+    }
   })
+
+  useEffect(() => { localStorage.setItem('prism_query', query) }, [query])
+  useEffect(() => { localStorage.setItem('prism_terms', JSON.stringify(proposedTerms)) }, [proposedTerms])
+  useEffect(() => { localStorage.setItem('prism_papers', JSON.stringify(papers)) }, [papers])
+  useEffect(() => { localStorage.setItem('prism_analysis', JSON.stringify(analysis)) }, [analysis])
+  useEffect(() => { localStorage.setItem('prism_summary', summary) }, [summary])
+  useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
+
+  function clearSession() {
+    localStorage.clear()
+    setQuery('')
+    setProposedTerms([])
+    setPapers([])
+    setAnalysis({})
+    setSummary('')
+    setProcessLog([])
+    setStage('input')
+  }
 
   function log(msg) {
     const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -445,34 +480,55 @@ export default function App() {
 
   async function fetchAbstracts(paperList) {
     const result = []
-    for (const paper of paperList) {
+    const batchSize = 10
+    const batches = []
+    for (let i = 0; i < paperList.length; i += batchSize) {
+      batches.push(paperList.slice(i, i + batchSize))
+    }
+    for (const batch of batches) {
       try {
-        await new Promise((r) => setTimeout(r, 300))
+        const ids = batch.map((p) => p.id).join(',')
         const res = await fetch(
-          `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${paper.id}&retmode=xml&rettype=abstract`
+          `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${ids}&retmode=xml&rettype=abstract`
         )
-        const text = await res.text()
-        const match = text.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
-        result.push({ ...paper, abstract: match ? match[1] : 'No abstract available' })
+        const xml = await res.text()
+        batch.forEach((paper) => {
+          const paperRegex = new RegExp(
+            `<PubmedArticle>[\\s\\S]*?<PMID[^>]*>${paper.id}</PMID>[\\s\\S]*?<AbstractText[^>]*>([\\s\\S]*?)<\\/AbstractText>`,
+            'i'
+          )
+          const match = xml.match(paperRegex)
+          if (match) {
+            result.push({ ...paper, abstract: match[1] })
+          } else {
+            const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
+            result.push({ ...paper, abstract: simpleMatch ? simpleMatch[1] : 'No abstract available' })
+          }
+        })
       } catch {
-        result.push({ ...paper, abstract: 'No abstract available' })
+        batch.forEach((paper) => result.push({ ...paper, abstract: 'No abstract available' }))
       }
+      await new Promise((r) => setTimeout(r, 200))
     }
     return result
+  }
+
+  async function buildSummary(paperList) {
+    const corpus = paperList
+      .map((p) => `Title: ${p.title}\nAbstract: ${p.abstract?.slice(0, 300)}`)
+      .join('\n\n---\n\n')
+    const built = await callClaude(
+      `Summarize the key claims, findings, and debates across these ${paperList.length} papers on "${query}" in a condensed synthesis of no more than 1500 words. Focus on areas of agreement, disagreement, and methodological patterns. Return plain text only.\n\nCORPUS:\n${corpus}`
+    )
+    setSummary(built)
+    log('Corpus condensed — ready to analyze')
+    return built
   }
 
   async function getOrBuildSummary() {
     if (summary) return summary
     log('Condensing corpus...')
-    const corpus = papers
-      .map((p) => `Title: ${p.title}\nAbstract: ${p.abstract?.slice(0, 300)}`)
-      .join('\n\n---\n\n')
-    const built = await callClaude(
-      `Summarize the key claims, findings, and debates across these ${papers.length} papers on "${query}" in a condensed synthesis of no more than 1500 words. Focus on areas of agreement, disagreement, and methodological patterns. Return plain text only.\n\nCORPUS:\n${corpus}`
-    )
-    setSummary(built)
-    log('Corpus condensed')
-    return built
+    return await buildSummary(papers)
   }
 
   async function runSearch() {
@@ -483,51 +539,68 @@ export default function App() {
     setSummary('')
     setAnalysis({})
     setProcessLog([])
+    localStorage.removeItem('prism_papers')
+    localStorage.removeItem('prism_analysis')
+    localStorage.removeItem('prism_summary')
     log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
-    const allPapers = []
-    const perTerm = Math.ceil(paperCount / proposedTerms.length)
+    const perTerm = Math.ceil(paperCount / proposedTerms.length * 2.5)
 
-    for (const term of proposedTerms) {
-      try {
-        const searchRes = await fetch(
-          `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
-        )
-        const searchData = await searchRes.json()
-        const ids = searchData.esearchresult.idlist
-        if (!ids.length) continue
-        await new Promise((r) => setTimeout(r, 500))
-        const detailRes = await fetch(
-          `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
-        )
-        const detailData = await detailRes.json()
-        if (!detailData.result) continue
-        ids.forEach((id) => {
-          if (allPapers.find((p) => p.id === id)) return
-          const paper = detailData.result[id]
-          if (!paper?.title) return
-          allPapers.push({
-            id,
-            title: paper.title,
-            authors: paper.authors?.map((a) => a.name).join(', '),
-            year: paper.pubdate?.split(' ')[0],
-            source: paper.source,
-            searchTerm: term,
-          })
-        })
-        await new Promise((r) => setTimeout(r, 500))
-      } catch (err) {
-        console.error(err)
+    const termResults = await Promise.all(
+      proposedTerms.map(async (term, index) => {
+        await new Promise((r) => setTimeout(r, index * 400))
+        try {
+          const searchRes = await fetch(
+            `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
+          )
+          const searchData = await searchRes.json()
+          const ids = searchData.esearchresult.idlist
+          if (!ids.length) return []
+          await new Promise((r) => setTimeout(r, 300))
+          const detailRes = await fetch(
+            `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
+          )
+          const detailData = await detailRes.json()
+          if (!detailData.result) return []
+          return ids
+            .filter((id) => detailData.result[id]?.title)
+            .map((id) => {
+              const paper = detailData.result[id]
+              return {
+                id,
+                title: paper.title,
+                authors: paper.authors?.map((a) => a.name).join(', '),
+                year: paper.pubdate?.split(' ')[0],
+                source: paper.source,
+                searchTerm: term,
+              }
+            })
+        } catch {
+          return []
+        }
+      })
+    )
+
+    const seen = new Set()
+    const allPapers = []
+    for (const batch of termResults) {
+      for (const paper of batch) {
+        if (!seen.has(paper.id)) {
+          seen.add(paper.id)
+          allPapers.push(paper)
+        }
       }
     }
 
     log(`Found ${allPapers.length} unique papers`)
     setLoadingMessage('Fetching abstracts...')
-    log('Fetching abstracts...')
+    log('Fetching abstracts in batches...')
     const withAbstracts = await fetchAbstracts(allPapers)
     setPapers(withAbstracts)
     log('Abstract retrieval complete')
     setLoading(false)
+    log('Building corpus summary in background...')
+    buildSummary(withAbstracts)
   }
 
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
@@ -587,8 +660,197 @@ export default function App() {
     )
   }
 
+  async function runFieldDiagnostic() {
+    setLoading(true)
+    setLoadingMessage('Running field diagnostic...')
+    log('Running field diagnostic...')
+    const syn = await getOrBuildSummary()
+
+    const priorAnalysis = [
+      analysis.absenceMapping ? `ABSENCES:\n${analysis.absenceMapping.map((a) => `- ${a.category}: ${a.description}`).join('\n')}` : '',
+      analysis.tensionTopology ? `TENSIONS:\n${analysis.tensionTopology.map((t) => `- ${t.title}: ${t.rootCause}`).join('\n')}` : '',
+      analysis.methodologicalCritique ? `CRITIQUES:\n${analysis.methodologicalCritique.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}` : '',
+      analysis.hypotheses ? `HYPOTHESES:\n${analysis.hypotheses.map((h) => `- ${h.nudge}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n')
+
+    const text = await callClaude(`You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
+
+Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
+
+Return ONLY this JSON, no markdown:
+{
+  "dimensions": [
+    {
+      "name": "Methodological Integrity",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Theoretical Consensus",
+      "score": 6,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Population Coverage",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Longitudinal Depth",
+      "score": 2,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Replication Robustness",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Cross-disciplinary Integration",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    }
+  ],
+  "overallScore": 3.7,
+  "overallVerdict": "2-3 sentence plain language summary of the field epistemic health",
+  "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
+}
+
+LITERATURE SYNTHESIS:
+${syn}
+
+PRIOR ANALYSIS:
+${priorAnalysis}`, 4000)
+
+    const cleaned = text.replace(/```json|```/g, '').trim()
+    const result = JSON.parse(cleaned)
+    setAnalysis((prev) => ({ ...prev, fieldDiagnostic: result }))
+    log('Field diagnostic complete')
+    setLoading(false)
+    setActivePanel('fieldDiagnostic')
+  }
+
+  async function exportBrief() {
+    const children = []
+
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })] }))
+    children.push(new Paragraph({ children: [new TextRun({ text: `Topic: ${query}`, italics: true })] }))
+    children.push(new Paragraph({ children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })] }))
+    children.push(new Paragraph({ children: [new TextRun('')] }))
+
+    if (analysis.fieldDiagnostic) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Field Diagnostic')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: `Overall Epistemic Health: ${analysis.fieldDiagnostic.overallScore.toFixed(1)}/10`, bold: true })] }))
+      children.push(new Paragraph({ children: [new TextRun(analysis.fieldDiagnostic.overallVerdict)] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Opportunity: ', bold: true }), new TextRun(analysis.fieldDiagnostic.opportunity)] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.fieldDiagnostic.dimensions.forEach((dim) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `${dim.name}: ${dim.score}/10`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(dim.verdict)] }))
+        children.push(new Paragraph({ children: [new TextRun(dim.detail)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.absenceMapping) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Absence Mapping')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'What this field is not studying and why it matters', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.absenceMapping.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.significance.toUpperCase()}] ${item.category}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.tensionTopology) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Tension Topology')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.tensionTopology.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.type.toUpperCase()}] ${item.title}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Root cause: ', bold: true }), new TextRun(item.rootCause)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Resolution: ', bold: true }), new TextRun(item.resolution)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.methodologicalCritique) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Methodological Critique')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.methodologicalCritique.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.severity.toUpperCase()}] ${item.issue}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Affected: ', bold: true }), new TextRun(item.affected)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Remedy: ', bold: true }), new TextRun(item.remedy)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.hypotheses) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Hypothesis Nudges')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Directions worth pursuing', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.hypotheses.forEach((item, i) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Rationale: ', bold: true }), new TextRun(item.rationale)] }))
+        if (item.tags?.length) {
+          children.push(new Paragraph({ children: [new TextRun({ text: 'Tags: ', bold: true }), new TextRun(item.tags.join(', '))] }))
+        }
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(`Corpus — ${papers.length} papers`)] }))
+    papers.forEach((p) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: p.title, bold: true }),
+          new TextRun({ text: ` (${p.year}) — ${p.source}` }),
+        ]
+      }))
+    })
+
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: 'Arial', size: 24 } } },
+        paragraphStyles: [
+          { id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { size: 36, bold: true, font: 'Arial' }, paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 } },
+          { id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { size: 28, bold: true, font: 'Arial' }, paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 } },
+        ]
+      },
+      sections: [{
+        properties: {
+          page: {
+            size: { width: 12240, height: 15840 },
+            margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+          }
+        },
+        children
+      }]
+    })
+
+    const buffer = await Packer.toBlob(doc)
+    const url = URL.createObjectURL(buffer)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.docx`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const navItems = [
     { key: 'overview', label: 'Overview', color: COLORS.accent },
+    { key: 'fieldDiagnostic', label: 'Field Diagnostic', color: COLORS.accent, count: analysis.fieldDiagnostic ? analysis.fieldDiagnostic.overallScore.toFixed(1) : undefined },
     { key: 'absenceMapping', label: 'Absence Mapping', color: COLORS.red, count: analysis.absenceMapping?.length },
     { key: 'tensionTopology', label: 'Tension Topology', color: COLORS.blue, count: analysis.tensionTopology?.length },
     { key: 'methodologicalCritique', label: 'Method Critique', color: COLORS.amber, count: analysis.methodologicalCritique?.length },
@@ -602,6 +864,7 @@ export default function App() {
     { label: 'Tension Topology', fn: runTensionTopology, done: !!analysis.tensionTopology },
     { label: 'Method Critique', fn: runMethodologicalCritique, done: !!analysis.methodologicalCritique },
     { label: 'Hypotheses', fn: runHypothesisGeneration, done: !!analysis.hypotheses },
+    { label: 'Field Diagnostic', fn: runFieldDiagnostic, done: !!analysis.fieldDiagnostic },
   ]
 
   if (stage === 'onboarding') {
@@ -615,19 +878,15 @@ export default function App() {
           <p style={{ color: COLORS.muted, fontSize: '12px', marginBottom: '32px' }}>
             Pattern Recognition and Insight through Systemic Mapping
           </p>
-
           <div style={{ ...styles.card, marginBottom: '24px' }}>
             <p style={{ color: COLORS.muted, fontSize: '12px', lineHeight: 1.8 }}>
               Tell PRISM about your research context. This personalizes hypothesis generation and lab positioning to your actual capabilities.
             </p>
           </div>
-
           <label style={styles.label}>Name (optional)</label>
           <input style={styles.input} placeholder="Your name" value={researcherProfile.name} onChange={(e) => setResearcherProfile((p) => ({ ...p, name: e.target.value }))} />
-
           <label style={styles.label}>Institution (optional)</label>
           <input style={styles.input} placeholder="University or lab" value={researcherProfile.institution} onChange={(e) => setResearcherProfile((p) => ({ ...p, institution: e.target.value }))} />
-
           <label style={styles.label}>Career Stage</label>
           <select style={styles.select} value={researcherProfile.careerStage} onChange={(e) => setResearcherProfile((p) => ({ ...p, careerStage: e.target.value }))}>
             <option value="undergraduate">Undergraduate researcher</option>
@@ -636,7 +895,6 @@ export default function App() {
             <option value="faculty">Faculty / PI</option>
             <option value="industry">Industry researcher</option>
           </select>
-
           <label style={styles.label}>Methods Available</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
             {methodOptions.map((m) => (
@@ -644,7 +902,6 @@ export default function App() {
             ))}
           </div>
           <input style={styles.input} placeholder="Other methods, comma separated..." value={researcherProfile.customMethods} onChange={(e) => setResearcherProfile((p) => ({ ...p, customMethods: e.target.value }))} />
-
           <label style={styles.label}>Research Domains</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
             {domainOptions.map((d) => (
@@ -652,9 +909,8 @@ export default function App() {
             ))}
           </div>
           <input style={styles.input} placeholder="Other domains, comma separated..." value={researcherProfile.customDomains} onChange={(e) => setResearcherProfile((p) => ({ ...p, customDomains: e.target.value }))} />
-
           <button style={{ ...styles.btn('primary'), marginTop: '32px', width: '100%', padding: '12px' }} onClick={() => setStage('input')}>
-            Enter PRISM →
+            Enter PRISM
           </button>
         </div>
       </div>
@@ -669,13 +925,11 @@ export default function App() {
             <PrismLogo />
             PRISM
           </div>
-
           <div style={styles.card}>
             <div style={styles.sectionTitle}>New Search</div>
             <div style={{ ...styles.sectionSub, marginBottom: '16px' }}>
               {researcherProfile.name ? `Welcome, ${researcherProfile.name}.` : ''} What do you want to map?
             </div>
-
             <input
               style={styles.input}
               placeholder="Enter a research topic..."
@@ -683,18 +937,13 @@ export default function App() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && query && generateTerms()}
             />
-
             <div style={{ marginTop: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                 <span style={{ fontSize: '11px', color: COLORS.muted }}>CORPUS SIZE</span>
                 <span style={{ fontSize: '11px', color: COLORS.accent }}>{paperCount} papers</span>
               </div>
               <input
-                type="range"
-                min="20"
-                max="200"
-                step="10"
-                value={paperCount}
+                type="range" min="20" max="200" step="10" value={paperCount}
                 onChange={(e) => setPaperCount(Number(e.target.value))}
                 style={{ width: '100%', accentColor: COLORS.accent }}
               />
@@ -704,11 +953,10 @@ export default function App() {
                 <span>200 — comprehensive</span>
               </div>
             </div>
-
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-              <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>← Profile</button>
+              <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>Profile</button>
               <button style={{ ...styles.btn('primary'), flex: 1 }} onClick={generateTerms} disabled={!query}>
-                Generate Search Terms →
+                Generate Search Terms
               </button>
             </div>
           </div>
@@ -725,26 +973,22 @@ export default function App() {
             <PrismLogo />
             PRISM
           </div>
-
           <div style={styles.card}>
             <div style={styles.sectionTitle}>Review Search Terms</div>
             <div style={styles.sectionSub}>Edit, remove, or add terms before hitting PubMed.</div>
-
             {proposedTerms.map((term, i) => (
               <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                 <input style={{ ...styles.input, flex: 1 }} value={term} onChange={(e) => updateTerm(i, e.target.value)} />
-                <button style={styles.btn('secondary')} onClick={() => removeTerm(i)}>✕</button>
+                <button style={styles.btn('secondary')} onClick={() => removeTerm(i)}>x</button>
               </div>
             ))}
-
             <button style={{ ...styles.btn('secondary'), marginTop: '4px' }} onClick={() => setProposedTerms([...proposedTerms, ''])}>
               + Add Term
             </button>
-
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-              <button style={styles.btn('secondary')} onClick={() => setStage('input')}>← Back</button>
+              <button style={styles.btn('secondary')} onClick={() => setStage('input')}>Back</button>
               <button style={{ ...styles.btn('primary'), flex: 1 }} onClick={runSearch}>
-                Confirm & Search PubMed →
+                Confirm and Search PubMed
               </button>
             </div>
           </div>
@@ -792,10 +1036,21 @@ export default function App() {
               onClick={m.fn}
               disabled={loading || !papers.length}
             >
-              {m.done ? '✓ ' : ''}{m.label}
+              {m.done ? 'done ' : ''}{m.label}
             </button>
           </div>
         ))}
+
+        <div style={styles.sidebarLabel}>Export</div>
+        <div style={{ padding: '4px 12px' }}>
+          <button
+            style={{ ...styles.btn('secondary'), width: '100%', fontSize: '11px', padding: '6px 10px' }}
+            onClick={exportBrief}
+            disabled={!papers.length}
+          >
+            Export Brief
+          </button>
+        </div>
 
         <div style={styles.sidebarLabel}>Session</div>
         <div style={styles.sidebarItem(false)} onClick={() => setStage('input')}>
@@ -806,12 +1061,16 @@ export default function App() {
           <div style={styles.dot(COLORS.muted)} />
           Edit Profile
         </div>
+        <div style={styles.sidebarItem(false)} onClick={clearSession}>
+          <div style={styles.dot(COLORS.red)} />
+          Clear Session
+        </div>
       </div>
 
       <div style={styles.main}>
         {loading && (
           <div style={{ ...styles.card, borderColor: COLORS.accent }}>
-            <span style={{ color: COLORS.accent }}>◎ {loadingMessage}</span>
+            <span style={{ color: COLORS.accent }}>loading {loadingMessage}</span>
           </div>
         )}
 
@@ -840,6 +1099,32 @@ export default function App() {
               </div>
             </div>
 
+            {analysis.fieldDiagnostic && (
+              <div style={{
+                ...styles.card,
+                borderColor: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                             analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                cursor: 'pointer',
+              }} onClick={() => setActivePanel('fieldDiagnostic')}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px' }}>
+                  <div style={{
+                    fontFamily: '"Times New Roman", serif',
+                    fontSize: '36px',
+                    fontWeight: 'bold',
+                    color: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                           analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                    lineHeight: 1,
+                  }}>
+                    {analysis.fieldDiagnostic.overallScore.toFixed(1)}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Field Epistemic Health</div>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>{analysis.fieldDiagnostic.overallVerdict.slice(0, 100)}...</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div style={styles.card}>
               <div style={styles.sectionTitle}>Topic</div>
               <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px' }}>{query}</p>
@@ -852,17 +1137,77 @@ export default function App() {
               <div style={styles.card}>
                 <div style={styles.sectionTitle}>Ready to analyze</div>
                 <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
-                  Run analysis modules from the sidebar. Start with Absence Mapping, then Tension Topology, then Method Critique — hypothesis generation is sharpest when run last.
+                  Run analysis modules from the sidebar. Start with Absence Mapping, then Tension Topology, then Method Critique, then Hypotheses — run Field Diagnostic last for the most accurate score.
                 </p>
               </div>
             )}
           </>
         )}
 
+        {activePanel === 'fieldDiagnostic' && analysis.fieldDiagnostic && (
+          <div>
+            <div style={styles.sectionTitle}>Field Diagnostic</div>
+            <div style={styles.sectionSub}>Epistemic health assessment of {query}</div>
+            <div style={{
+              ...styles.card,
+              marginBottom: '20px',
+              borderColor: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                           analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', marginBottom: '12px' }}>
+                <div style={{
+                  fontFamily: '"Times New Roman", serif',
+                  fontSize: '52px',
+                  fontWeight: 'bold',
+                  color: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                         analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                  lineHeight: 1,
+                }}>
+                  {analysis.fieldDiagnostic.overallScore.toFixed(1)}
+                </div>
+                <div style={{ fontSize: '14px', color: COLORS.muted }}>/10 overall epistemic health</div>
+              </div>
+              <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.8, marginBottom: '10px' }}>
+                {analysis.fieldDiagnostic.overallVerdict}
+              </div>
+              <div style={{
+                fontSize: '12px',
+                color: COLORS.text,
+                lineHeight: 1.8,
+                borderTop: `1px solid ${COLORS.border}`,
+                paddingTop: '10px',
+                marginTop: '4px',
+              }}>
+                <span style={{ color: COLORS.accent }}>Opportunity: </span>
+                {analysis.fieldDiagnostic.opportunity}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {analysis.fieldDiagnostic.dimensions.map((dim, i) => {
+                const scoreColor = dim.score >= 7 ? COLORS.accent : dim.score >= 4 ? COLORS.amber : COLORS.red
+                return (
+                  <div key={i} style={{ ...styles.card, borderLeft: `3px solid ${scoreColor}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                      <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        {dim.name}
+                      </div>
+                      <div style={{ fontFamily: '"Times New Roman", serif', fontSize: '22px', fontWeight: 'bold', color: scoreColor }}>
+                        {dim.score}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginBottom: '4px' }}>{dim.verdict}</div>
+                    <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.7 }}>{dim.detail}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {activePanel === 'absenceMapping' && analysis.absenceMapping && (
           <div>
             <div style={styles.sectionTitle}>Absence Mapping</div>
-            <div style={styles.sectionSub}>What this field isn't studying — and why it matters</div>
+            <div style={styles.sectionSub}>What this field is not studying and why it matters</div>
             {analysis.absenceMapping.map((item, i) => (
               <div key={i} style={styles.absenceItem(significanceColors[item.significance])}>
                 <span style={styles.sigBadge(significanceColors[item.significance])}>{item.significance}</span>

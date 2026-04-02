@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import '@fontsource/dm-mono'
+import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 
 const COLORS = {
   bg: '#080c0f',
@@ -476,36 +477,63 @@ export default function App() {
     setProposedTerms(proposedTerms.filter((_, idx) => idx !== i))
   }
 
+  // SPEED FIX 1: Batch abstract fetching — fetch 10 at a time instead of 1 at a time
   async function fetchAbstracts(paperList) {
     const result = []
-    for (const paper of paperList) {
-      try {
-        await new Promise((r) => setTimeout(r, 300))
-        const res = await fetch(
-          `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${paper.id}&retmode=xml&rettype=abstract`
-        )
-        const text = await res.text()
-        const match = text.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
-        result.push({ ...paper, abstract: match ? match[1] : 'No abstract available' })
-      } catch {
-        result.push({ ...paper, abstract: 'No abstract available' })
-      }
+    const batchSize = 10
+    const batches = []
+
+    for (let i = 0; i < paperList.length; i += batchSize) {
+      batches.push(paperList.slice(i, i + batchSize))
     }
+
+    for (const batch of batches) {
+      try {
+        const ids = batch.map((p) => p.id).join(',')
+        const res = await fetch(
+          `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${ids}&retmode=xml&rettype=abstract`
+        )
+        const xml = await res.text()
+
+        batch.forEach((paper) => {
+          const paperRegex = new RegExp(
+            `<PubmedArticle>[\\s\\S]*?<PMID[^>]*>${paper.id}</PMID>[\\s\\S]*?<AbstractText[^>]*>([\\s\\S]*?)<\\/AbstractText>`,
+            'i'
+          )
+          const match = xml.match(paperRegex)
+          if (match) {
+            result.push({ ...paper, abstract: match[1] })
+          } else {
+            const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
+            result.push({ ...paper, abstract: simpleMatch ? simpleMatch[1] : 'No abstract available' })
+          }
+        })
+      } catch {
+        batch.forEach((paper) => result.push({ ...paper, abstract: 'No abstract available' }))
+      }
+
+      await new Promise((r) => setTimeout(r, 200))
+    }
+
     return result
+  }
+
+  async function buildSummary(paperList) {
+    const corpus = paperList
+      .map((p) => `Title: ${p.title}\nAbstract: ${p.abstract?.slice(0, 300)}`)
+      .join('\n\n---\n\n')
+    const built = await callClaude(
+      `Summarize the key claims, findings, and debates across these ${paperList.length} papers on "${query}" in a condensed synthesis of no more than 1500 words. Focus on areas of agreement, disagreement, and methodological patterns. Return plain text only.\n\nCORPUS:\n${corpus}`
+    )
+    setSummary(built)
+    log('Corpus condensed — ready to analyze')
+    return built
   }
 
   async function getOrBuildSummary() {
     if (summary) return summary
     log('Condensing corpus...')
-    const corpus = papers
-      .map((p) => `Title: ${p.title}\nAbstract: ${p.abstract?.slice(0, 300)}`)
-      .join('\n\n---\n\n')
-    const built = await callClaude(
-      `Summarize the key claims, findings, and debates across these ${papers.length} papers on "${query}" in a condensed synthesis of no more than 1500 words. Focus on areas of agreement, disagreement, and methodological patterns. Return plain text only.\n\nCORPUS:\n${corpus}`
-    )
-    setSummary(built)
-    log('Corpus condensed')
-    return built
+    return await buildSummary(papers)
   }
 
   async function runSearch() {
@@ -521,49 +549,69 @@ export default function App() {
     localStorage.removeItem('prism_summary')
     log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
-    const allPapers = []
     const perTerm = Math.ceil(paperCount / proposedTerms.length)
 
-    for (const term of proposedTerms) {
-      try {
-        const searchRes = await fetch(
-          `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
-        )
-        const searchData = await searchRes.json()
-        const ids = searchData.esearchresult.idlist
-        if (!ids.length) continue
-        await new Promise((r) => setTimeout(r, 500))
-        const detailRes = await fetch(
-          `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
-        )
-        const detailData = await detailRes.json()
-        if (!detailData.result) continue
-        ids.forEach((id) => {
-          if (allPapers.find((p) => p.id === id)) return
-          const paper = detailData.result[id]
-          if (!paper?.title) return
-          allPapers.push({
-            id,
-            title: paper.title,
-            authors: paper.authors?.map((a) => a.name).join(', '),
-            year: paper.pubdate?.split(' ')[0],
-            source: paper.source,
-            searchTerm: term,
-          })
-        })
-        await new Promise((r) => setTimeout(r, 500))
-      } catch (err) {
-        console.error(err)
+    // SPEED FIX 2: Parallel term searches — all terms fire simultaneously
+    const termResults = await Promise.all(
+      proposedTerms.map(async (term) => {
+        try {
+          const searchRes = await fetch(
+            `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
+          )
+          const searchData = await searchRes.json()
+          const ids = searchData.esearchresult.idlist
+          if (!ids.length) return []
+
+          await new Promise((r) => setTimeout(r, 300))
+
+          const detailRes = await fetch(
+            `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
+          )
+          const detailData = await detailRes.json()
+          if (!detailData.result) return []
+
+          return ids
+            .filter((id) => detailData.result[id]?.title)
+            .map((id) => {
+              const paper = detailData.result[id]
+              return {
+                id,
+                title: paper.title,
+                authors: paper.authors?.map((a) => a.name).join(', '),
+                year: paper.pubdate?.split(' ')[0],
+                source: paper.source,
+                searchTerm: term,
+              }
+            })
+        } catch {
+          return []
+        }
+      })
+    )
+
+    // Deduplicate across terms
+    const seen = new Set()
+    const allPapers = []
+    for (const batch of termResults) {
+      for (const paper of batch) {
+        if (!seen.has(paper.id)) {
+          seen.add(paper.id)
+          allPapers.push(paper)
+        }
       }
     }
 
     log(`Found ${allPapers.length} unique papers`)
     setLoadingMessage('Fetching abstracts...')
-    log('Fetching abstracts...')
+    log('Fetching abstracts in batches...')
     const withAbstracts = await fetchAbstracts(allPapers)
     setPapers(withAbstracts)
     log('Abstract retrieval complete')
     setLoading(false)
+
+    // SPEED FIX 3: Build summary in background while user reviews overview
+    log('Building corpus summary in background...')
+    buildSummary(withAbstracts)
   }
 
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
@@ -623,205 +671,114 @@ export default function App() {
     )
   }
 
-async function exportBrief() {
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = await import('docx')
+  async function exportBrief() {
+    const children = []
 
-  const children = []
-
-  // Title
-  children.push(new Paragraph({
-    heading: HeadingLevel.HEADING_1,
-    children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })]
-  }))
-
-  children.push(new Paragraph({
-    children: [new TextRun({ text: `Topic: ${query}`, italics: true })]
-  }))
-  children.push(new Paragraph({
-    children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })]
-  }))
-  children.push(new Paragraph({ children: [new TextRun('')] }))
-
-  // Absence Mapping
-  if (analysis.absenceMapping) {
     children.push(new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [new TextRun('Absence Mapping')]
+      heading: HeadingLevel.HEADING_1,
+      children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })]
     }))
     children.push(new Paragraph({
-      children: [new TextRun({ text: 'What this field isn\'t studying — and why it matters', italics: true })]
+      children: [new TextRun({ text: `Topic: ${query}`, italics: true })]
+    }))
+    children.push(new Paragraph({
+      children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })]
     }))
     children.push(new Paragraph({ children: [new TextRun('')] }))
-    analysis.absenceMapping.forEach((item) => {
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: `[${item.significance.toUpperCase()}] `, bold: true }),
-          new TextRun({ text: item.category, bold: true }),
-        ]
-      }))
-      children.push(new Paragraph({
-        children: [new TextRun(item.description)]
-      }))
+
+    if (analysis.absenceMapping) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Absence Mapping')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'What this field is not studying and why it matters', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
-    })
-  }
+      analysis.absenceMapping.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.significance.toUpperCase()}] ${item.category}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
 
-  // Tension Topology
-  if (analysis.tensionTopology) {
-    children.push(new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [new TextRun('Tension Topology')]
-    }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })]
-    }))
-    children.push(new Paragraph({ children: [new TextRun('')] }))
-    analysis.tensionTopology.forEach((item) => {
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: `[${item.type.toUpperCase()}] `, bold: true }),
-          new TextRun({ text: item.title, bold: true }),
-        ]
-      }))
-      children.push(new Paragraph({ children: [new TextRun(item.description)] }))
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: 'Root cause: ', bold: true }),
-          new TextRun(item.rootCause)
-        ]
-      }))
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: 'Resolution: ', bold: true }),
-          new TextRun(item.resolution)
-        ]
-      }))
+    if (analysis.tensionTopology) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Tension Topology')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
-    })
-  }
+      analysis.tensionTopology.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.type.toUpperCase()}] ${item.title}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Root cause: ', bold: true }), new TextRun(item.rootCause)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Resolution: ', bold: true }), new TextRun(item.resolution)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
 
-  // Methodological Critique
-  if (analysis.methodologicalCritique) {
-    children.push(new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [new TextRun('Methodological Critique')]
-    }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })]
-    }))
-    children.push(new Paragraph({ children: [new TextRun('')] }))
-    analysis.methodologicalCritique.forEach((item) => {
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: `[${item.severity.toUpperCase()}] `, bold: true }),
-          new TextRun({ text: item.issue, bold: true }),
-        ]
-      }))
-      children.push(new Paragraph({ children: [new TextRun(item.description)] }))
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: 'Affected: ', bold: true }),
-          new TextRun(item.affected)
-        ]
-      }))
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: 'Remedy: ', bold: true }),
-          new TextRun(item.remedy)
-        ]
-      }))
+    if (analysis.methodologicalCritique) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Methodological Critique')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
-    })
-  }
+      analysis.methodologicalCritique.forEach((item) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.severity.toUpperCase()}] ${item.issue}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Affected: ', bold: true }), new TextRun(item.affected)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Remedy: ', bold: true }), new TextRun(item.remedy)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
 
-  // Hypotheses
-  if (analysis.hypotheses) {
-    children.push(new Paragraph({
-      heading: HeadingLevel.HEADING_2,
-      children: [new TextRun('Hypothesis Nudges')]
-    }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: 'Directions worth pursuing — the connections are yours to make', italics: true })]
-    }))
-    children.push(new Paragraph({ children: [new TextRun('')] }))
-    analysis.hypotheses.forEach((item, i) => {
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: `Nudge ${i + 1}`, bold: true }),
-          new TextRun({ text: item.labAddressable ? ' [LAB-ADDRESSABLE]' : '', bold: true }),
-          new TextRun({ text: ` — ${item.confidence} confidence` }),
-        ]
-      }))
-      children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: 'Rationale: ', bold: true }),
-          new TextRun(item.rationale)
-        ]
-      }))
-      if (item.tags?.length) {
+    if (analysis.hypotheses) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Hypothesis Nudges')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Directions worth pursuing', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.hypotheses.forEach((item, i) => {
         children.push(new Paragraph({
           children: [
-            new TextRun({ text: 'Tags: ', bold: true }),
-            new TextRun(item.tags.join(', '))
+            new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })
           ]
         }))
-      }
-      children.push(new Paragraph({ children: [new TextRun('')] }))
-    })
-  }
-
-  // Corpus
-  children.push(new Paragraph({
-    heading: HeadingLevel.HEADING_2,
-    children: [new TextRun(`Corpus — ${papers.length} papers`)]
-  }))
-  papers.forEach((p) => {
-    children.push(new Paragraph({
-      children: [
-        new TextRun({ text: p.title, bold: true }),
-        new TextRun({ text: ` (${p.year}) — ${p.source}` }),
-      ]
-    }))
-  })
-
-  const doc = new Document({
-    styles: {
-      default: {
-        document: { run: { font: 'Arial', size: 24 } }
-      },
-      paragraphStyles: [
-        {
-          id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true,
-          run: { size: 36, bold: true, font: 'Arial' },
-          paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 }
-        },
-        {
-          id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true,
-          run: { size: 28, bold: true, font: 'Arial' },
-          paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 }
-        },
-      ]
-    },
-    sections: [{
-      properties: {
-        page: {
-          size: { width: 12240, height: 15840 },
-          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+        children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Rationale: ', bold: true }), new TextRun(item.rationale)] }))
+        if (item.tags?.length) {
+          children.push(new Paragraph({ children: [new TextRun({ text: 'Tags: ', bold: true }), new TextRun(item.tags.join(', '))] }))
         }
-      },
-      children
-    }]
-  })
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
 
-  const buffer = await Packer.toBlob(doc)
-  const url = URL.createObjectURL(buffer)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.docx`
-  a.click()
-  URL.revokeObjectURL(url)
-}
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(`Corpus — ${papers.length} papers`)] }))
+    papers.forEach((p) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: p.title, bold: true }),
+          new TextRun({ text: ` (${p.year}) — ${p.source}` }),
+        ]
+      }))
+    })
+
+    const doc = new Document({
+      styles: {
+        default: { document: { run: { font: 'Arial', size: 24 } } },
+        paragraphStyles: [
+          { id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { size: 36, bold: true, font: 'Arial' }, paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 } },
+          { id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true, run: { size: 28, bold: true, font: 'Arial' }, paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 } },
+        ]
+      },
+      sections: [{
+        properties: {
+          page: {
+            size: { width: 12240, height: 15840 },
+            margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+          }
+        },
+        children
+      }]
+    })
+
+    const buffer = await Packer.toBlob(doc)
+    const url = URL.createObjectURL(buffer)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.docx`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const navItems = [
     { key: 'overview', label: 'Overview', color: COLORS.accent },
@@ -851,7 +808,6 @@ async function exportBrief() {
           <p style={{ color: COLORS.muted, fontSize: '12px', marginBottom: '32px' }}>
             Pattern Recognition and Insight through Systemic Mapping
           </p>
-
           <div style={{ ...styles.card, marginBottom: '24px' }}>
             <p style={{ color: COLORS.muted, fontSize: '12px', lineHeight: 1.8 }}>
               Tell PRISM about your research context. This personalizes hypothesis generation and lab positioning to your actual capabilities.
@@ -890,7 +846,7 @@ async function exportBrief() {
           <input style={styles.input} placeholder="Other domains, comma separated..." value={researcherProfile.customDomains} onChange={(e) => setResearcherProfile((p) => ({ ...p, customDomains: e.target.value }))} />
 
           <button style={{ ...styles.btn('primary'), marginTop: '32px', width: '100%', padding: '12px' }} onClick={() => setStage('input')}>
-            Enter PRISM →
+            Enter PRISM
           </button>
         </div>
       </div>
@@ -905,13 +861,11 @@ async function exportBrief() {
             <PrismLogo />
             PRISM
           </div>
-
           <div style={styles.card}>
             <div style={styles.sectionTitle}>New Search</div>
             <div style={{ ...styles.sectionSub, marginBottom: '16px' }}>
               {researcherProfile.name ? `Welcome, ${researcherProfile.name}.` : ''} What do you want to map?
             </div>
-
             <input
               style={styles.input}
               placeholder="Enter a research topic..."
@@ -919,18 +873,13 @@ async function exportBrief() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && query && generateTerms()}
             />
-
             <div style={{ marginTop: '20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}>
                 <span style={{ fontSize: '11px', color: COLORS.muted }}>CORPUS SIZE</span>
                 <span style={{ fontSize: '11px', color: COLORS.accent }}>{paperCount} papers</span>
               </div>
               <input
-                type="range"
-                min="20"
-                max="200"
-                step="10"
-                value={paperCount}
+                type="range" min="20" max="200" step="10" value={paperCount}
                 onChange={(e) => setPaperCount(Number(e.target.value))}
                 style={{ width: '100%', accentColor: COLORS.accent }}
               />
@@ -940,11 +889,10 @@ async function exportBrief() {
                 <span>200 — comprehensive</span>
               </div>
             </div>
-
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-              <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>← Profile</button>
+              <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>Profile</button>
               <button style={{ ...styles.btn('primary'), flex: 1 }} onClick={generateTerms} disabled={!query}>
-                Generate Search Terms →
+                Generate Search Terms
               </button>
             </div>
           </div>
@@ -961,26 +909,22 @@ async function exportBrief() {
             <PrismLogo />
             PRISM
           </div>
-
           <div style={styles.card}>
             <div style={styles.sectionTitle}>Review Search Terms</div>
             <div style={styles.sectionSub}>Edit, remove, or add terms before hitting PubMed.</div>
-
             {proposedTerms.map((term, i) => (
               <div key={i} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
                 <input style={{ ...styles.input, flex: 1 }} value={term} onChange={(e) => updateTerm(i, e.target.value)} />
-                <button style={styles.btn('secondary')} onClick={() => removeTerm(i)}>✕</button>
+                <button style={styles.btn('secondary')} onClick={() => removeTerm(i)}>x</button>
               </div>
             ))}
-
             <button style={{ ...styles.btn('secondary'), marginTop: '4px' }} onClick={() => setProposedTerms([...proposedTerms, ''])}>
               + Add Term
             </button>
-
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-              <button style={styles.btn('secondary')} onClick={() => setStage('input')}>← Back</button>
+              <button style={styles.btn('secondary')} onClick={() => setStage('input')}>Back</button>
               <button style={{ ...styles.btn('primary'), flex: 1 }} onClick={runSearch}>
-                Confirm & Search PubMed →
+                Confirm and Search PubMed
               </button>
             </div>
           </div>
@@ -1028,7 +972,7 @@ async function exportBrief() {
               onClick={m.fn}
               disabled={loading || !papers.length}
             >
-              {m.done ? '✓ ' : ''}{m.label}
+              {m.done ? 'done ' : ''}{m.label}
             </button>
           </div>
         ))}
@@ -1062,7 +1006,7 @@ async function exportBrief() {
       <div style={styles.main}>
         {loading && (
           <div style={{ ...styles.card, borderColor: COLORS.accent }}>
-            <span style={{ color: COLORS.accent }}>◎ {loadingMessage}</span>
+            <span style={{ color: COLORS.accent }}>loading {loadingMessage}</span>
           </div>
         )}
 
@@ -1113,7 +1057,7 @@ async function exportBrief() {
         {activePanel === 'absenceMapping' && analysis.absenceMapping && (
           <div>
             <div style={styles.sectionTitle}>Absence Mapping</div>
-            <div style={styles.sectionSub}>What this field isn't studying — and why it matters</div>
+            <div style={styles.sectionSub}>What this field is not studying and why it matters</div>
             {analysis.absenceMapping.map((item, i) => (
               <div key={i} style={styles.absenceItem(significanceColors[item.significance])}>
                 <span style={styles.sigBadge(significanceColors[item.significance])}>{item.significance}</span>

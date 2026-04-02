@@ -481,11 +481,9 @@ export default function App() {
     const result = []
     const batchSize = 10
     const batches = []
-
     for (let i = 0; i < paperList.length; i += batchSize) {
       batches.push(paperList.slice(i, i + batchSize))
     }
-
     for (const batch of batches) {
       try {
         const ids = batch.map((p) => p.id).join(',')
@@ -493,7 +491,6 @@ export default function App() {
           `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${ids}&retmode=xml&rettype=abstract`
         )
         const xml = await res.text()
-
         batch.forEach((paper) => {
           const paperRegex = new RegExp(
             `<PubmedArticle>[\\s\\S]*?<PMID[^>]*>${paper.id}</PMID>[\\s\\S]*?<AbstractText[^>]*>([\\s\\S]*?)<\\/AbstractText>`,
@@ -503,7 +500,8 @@ export default function App() {
           if (match) {
             result.push({ ...paper, abstract: match[1] })
           } else {
-            result.push({ ...paper, abstract: 'No abstract available' })
+            const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
+            result.push({ ...paper, abstract: simpleMatch ? simpleMatch[1] : 'No abstract available' })
           }
         })
       } catch {
@@ -511,7 +509,6 @@ export default function App() {
       }
       await new Promise((r) => setTimeout(r, 200))
     }
-
     return result
   }
 
@@ -558,15 +555,12 @@ export default function App() {
           const searchData = await searchRes.json()
           const ids = searchData.esearchresult.idlist
           if (!ids.length) return []
-
           await new Promise((r) => setTimeout(r, 300))
-
           const detailRes = await fetch(
             `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
           )
           const detailData = await detailRes.json()
           if (!detailData.result) return []
-
           return ids
             .filter((id) => detailData.result[id]?.title)
             .map((id) => {
@@ -604,7 +598,6 @@ export default function App() {
     setPapers(withAbstracts)
     log('Abstract retrieval complete')
     setLoading(false)
-
     log('Building corpus summary in background...')
     buildSummary(withAbstracts)
   }
@@ -666,20 +659,103 @@ export default function App() {
     )
   }
 
+  async function runFieldDiagnostic() {
+    setLoading(true)
+    setLoadingMessage('Running field diagnostic...')
+    log('Running field diagnostic...')
+    const syn = await getOrBuildSummary()
+
+    const priorAnalysis = [
+      analysis.absenceMapping ? `ABSENCES:\n${analysis.absenceMapping.map((a) => `- ${a.category}: ${a.description}`).join('\n')}` : '',
+      analysis.tensionTopology ? `TENSIONS:\n${analysis.tensionTopology.map((t) => `- ${t.title}: ${t.rootCause}`).join('\n')}` : '',
+      analysis.methodologicalCritique ? `CRITIQUES:\n${analysis.methodologicalCritique.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}` : '',
+      analysis.hypotheses ? `HYPOTHESES:\n${analysis.hypotheses.map((h) => `- ${h.nudge}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n')
+
+    const text = await callClaude(`You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
+
+Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
+
+Return ONLY this JSON, no markdown:
+{
+  "dimensions": [
+    {
+      "name": "Methodological Integrity",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Theoretical Consensus",
+      "score": 6,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Population Coverage",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Longitudinal Depth",
+      "score": 2,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Replication Robustness",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Cross-disciplinary Integration",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    }
+  ],
+  "overallScore": 3.7,
+  "overallVerdict": "2-3 sentence plain language summary of the field epistemic health",
+  "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
+}
+
+LITERATURE SYNTHESIS:
+${syn}
+
+PRIOR ANALYSIS:
+${priorAnalysis}`, 4000)
+
+    const cleaned = text.replace(/```json|```/g, '').trim()
+    const result = JSON.parse(cleaned)
+    setAnalysis((prev) => ({ ...prev, fieldDiagnostic: result }))
+    log('Field diagnostic complete')
+    setLoading(false)
+    setActivePanel('fieldDiagnostic')
+  }
+
   async function exportBrief() {
     const children = []
 
-    children.push(new Paragraph({
-      heading: HeadingLevel.HEADING_1,
-      children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })]
-    }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: `Topic: ${query}`, italics: true })]
-    }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })]
-    }))
+    children.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })] }))
+    children.push(new Paragraph({ children: [new TextRun({ text: `Topic: ${query}`, italics: true })] }))
+    children.push(new Paragraph({ children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })] }))
     children.push(new Paragraph({ children: [new TextRun('')] }))
+
+    if (analysis.fieldDiagnostic) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Field Diagnostic')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: `Overall Epistemic Health: ${analysis.fieldDiagnostic.overallScore.toFixed(1)}/10`, bold: true })] }))
+      children.push(new Paragraph({ children: [new TextRun(analysis.fieldDiagnostic.overallVerdict)] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Opportunity: ', bold: true }), new TextRun(analysis.fieldDiagnostic.opportunity)] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.fieldDiagnostic.dimensions.forEach((dim) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `${dim.name}: ${dim.score}/10`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(dim.verdict)] }))
+        children.push(new Paragraph({ children: [new TextRun(dim.detail)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
 
     if (analysis.absenceMapping) {
       children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Absence Mapping')] }))
@@ -723,9 +799,7 @@ export default function App() {
       children.push(new Paragraph({ children: [new TextRun({ text: 'Directions worth pursuing', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.hypotheses.forEach((item, i) => {
-        children.push(new Paragraph({
-          children: [new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })]
-        }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Rationale: ', bold: true }), new TextRun(item.rationale)] }))
         if (item.tags?.length) {
@@ -775,6 +849,7 @@ export default function App() {
 
   const navItems = [
     { key: 'overview', label: 'Overview', color: COLORS.accent },
+    { key: 'fieldDiagnostic', label: 'Field Diagnostic', color: COLORS.accent, count: analysis.fieldDiagnostic ? analysis.fieldDiagnostic.overallScore.toFixed(1) : undefined },
     { key: 'absenceMapping', label: 'Absence Mapping', color: COLORS.red, count: analysis.absenceMapping?.length },
     { key: 'tensionTopology', label: 'Tension Topology', color: COLORS.blue, count: analysis.tensionTopology?.length },
     { key: 'methodologicalCritique', label: 'Method Critique', color: COLORS.amber, count: analysis.methodologicalCritique?.length },
@@ -788,6 +863,7 @@ export default function App() {
     { label: 'Tension Topology', fn: runTensionTopology, done: !!analysis.tensionTopology },
     { label: 'Method Critique', fn: runMethodologicalCritique, done: !!analysis.methodologicalCritique },
     { label: 'Hypotheses', fn: runHypothesisGeneration, done: !!analysis.hypotheses },
+    { label: 'Field Diagnostic', fn: runFieldDiagnostic, done: !!analysis.fieldDiagnostic },
   ]
 
   if (stage === 'onboarding') {
@@ -806,13 +882,10 @@ export default function App() {
               Tell PRISM about your research context. This personalizes hypothesis generation and lab positioning to your actual capabilities.
             </p>
           </div>
-
           <label style={styles.label}>Name (optional)</label>
           <input style={styles.input} placeholder="Your name" value={researcherProfile.name} onChange={(e) => setResearcherProfile((p) => ({ ...p, name: e.target.value }))} />
-
           <label style={styles.label}>Institution (optional)</label>
           <input style={styles.input} placeholder="University or lab" value={researcherProfile.institution} onChange={(e) => setResearcherProfile((p) => ({ ...p, institution: e.target.value }))} />
-
           <label style={styles.label}>Career Stage</label>
           <select style={styles.select} value={researcherProfile.careerStage} onChange={(e) => setResearcherProfile((p) => ({ ...p, careerStage: e.target.value }))}>
             <option value="undergraduate">Undergraduate researcher</option>
@@ -821,7 +894,6 @@ export default function App() {
             <option value="faculty">Faculty / PI</option>
             <option value="industry">Industry researcher</option>
           </select>
-
           <label style={styles.label}>Methods Available</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
             {methodOptions.map((m) => (
@@ -829,7 +901,6 @@ export default function App() {
             ))}
           </div>
           <input style={styles.input} placeholder="Other methods, comma separated..." value={researcherProfile.customMethods} onChange={(e) => setResearcherProfile((p) => ({ ...p, customMethods: e.target.value }))} />
-
           <label style={styles.label}>Research Domains</label>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
             {domainOptions.map((d) => (
@@ -837,7 +908,6 @@ export default function App() {
             ))}
           </div>
           <input style={styles.input} placeholder="Other domains, comma separated..." value={researcherProfile.customDomains} onChange={(e) => setResearcherProfile((p) => ({ ...p, customDomains: e.target.value }))} />
-
           <button style={{ ...styles.btn('primary'), marginTop: '32px', width: '100%', padding: '12px' }} onClick={() => setStage('input')}>
             Enter PRISM
           </button>
@@ -1028,6 +1098,32 @@ export default function App() {
               </div>
             </div>
 
+            {analysis.fieldDiagnostic && (
+              <div style={{
+                ...styles.card,
+                borderColor: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                             analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                cursor: 'pointer',
+              }} onClick={() => setActivePanel('fieldDiagnostic')}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px' }}>
+                  <div style={{
+                    fontFamily: '"Times New Roman", serif',
+                    fontSize: '36px',
+                    fontWeight: 'bold',
+                    color: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                           analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                    lineHeight: 1,
+                  }}>
+                    {analysis.fieldDiagnostic.overallScore.toFixed(1)}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Field Epistemic Health</div>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginTop: '2px' }}>{analysis.fieldDiagnostic.overallVerdict.slice(0, 100)}...</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div style={styles.card}>
               <div style={styles.sectionTitle}>Topic</div>
               <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px' }}>{query}</p>
@@ -1040,11 +1136,71 @@ export default function App() {
               <div style={styles.card}>
                 <div style={styles.sectionTitle}>Ready to analyze</div>
                 <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
-                  Run analysis modules from the sidebar. Start with Absence Mapping, then Tension Topology, then Method Critique — hypothesis generation is sharpest when run last.
+                  Run analysis modules from the sidebar. Start with Absence Mapping, then Tension Topology, then Method Critique, then Hypotheses — run Field Diagnostic last for the most accurate score.
                 </p>
               </div>
             )}
           </>
+        )}
+
+        {activePanel === 'fieldDiagnostic' && analysis.fieldDiagnostic && (
+          <div>
+            <div style={styles.sectionTitle}>Field Diagnostic</div>
+            <div style={styles.sectionSub}>Epistemic health assessment of {query}</div>
+            <div style={{
+              ...styles.card,
+              marginBottom: '20px',
+              borderColor: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                           analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', marginBottom: '12px' }}>
+                <div style={{
+                  fontFamily: '"Times New Roman", serif',
+                  fontSize: '52px',
+                  fontWeight: 'bold',
+                  color: analysis.fieldDiagnostic.overallScore >= 7 ? COLORS.accent :
+                         analysis.fieldDiagnostic.overallScore >= 4 ? COLORS.amber : COLORS.red,
+                  lineHeight: 1,
+                }}>
+                  {analysis.fieldDiagnostic.overallScore.toFixed(1)}
+                </div>
+                <div style={{ fontSize: '14px', color: COLORS.muted }}>/10 overall epistemic health</div>
+              </div>
+              <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.8, marginBottom: '10px' }}>
+                {analysis.fieldDiagnostic.overallVerdict}
+              </div>
+              <div style={{
+                fontSize: '12px',
+                color: COLORS.text,
+                lineHeight: 1.8,
+                borderTop: `1px solid ${COLORS.border}`,
+                paddingTop: '10px',
+                marginTop: '4px',
+              }}>
+                <span style={{ color: COLORS.accent }}>Opportunity: </span>
+                {analysis.fieldDiagnostic.opportunity}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              {analysis.fieldDiagnostic.dimensions.map((dim, i) => {
+                const scoreColor = dim.score >= 7 ? COLORS.accent : dim.score >= 4 ? COLORS.amber : COLORS.red
+                return (
+                  <div key={i} style={{ ...styles.card, borderLeft: `3px solid ${scoreColor}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                      <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                        {dim.name}
+                      </div>
+                      <div style={{ fontFamily: '"Times New Roman", serif', fontSize: '22px', fontWeight: 'bold', color: scoreColor }}>
+                        {dim.score}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginBottom: '4px' }}>{dim.verdict}</div>
+                    <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.7 }}>{dim.detail}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
         )}
 
         {activePanel === 'absenceMapping' && analysis.absenceMapping && (

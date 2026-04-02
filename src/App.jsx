@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import '@fontsource/dm-mono'
+import { Analytics } from '@vercel/analytics/react'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 
 const COLORS = {
@@ -1305,6 +1306,7 @@ ${priorAnalysis}`, 4000)
           </div>
         )}
       </div>
+      <Analytics />
     </div>
   )
 }

@@ -623,77 +623,205 @@ export default function App() {
     )
   }
 
-  function exportBrief() {
-    const lines = []
-    lines.push(`PRISM ANALYSIS BRIEF`)
-    lines.push(`Topic: ${query}`)
-    lines.push(`Papers: ${papers.length}`)
-    lines.push(`Generated: ${new Date().toLocaleDateString()}`)
-    lines.push(`\n${'='.repeat(60)}\n`)
+async function exportBrief() {
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType } = await import('docx')
 
-    if (analysis.absenceMapping) {
-      lines.push(`ABSENCE MAPPING`)
-      lines.push(`What this field isn't studying\n`)
-      analysis.absenceMapping.forEach((item) => {
-        lines.push(`[${item.significance.toUpperCase()}] ${item.category}`)
-        lines.push(item.description)
-        lines.push('')
-      })
-      lines.push(`${'='.repeat(60)}\n`)
-    }
+  const children = []
 
-    if (analysis.tensionTopology) {
-      lines.push(`TENSION TOPOLOGY`)
-      lines.push(`Where and why researchers disagree\n`)
-      analysis.tensionTopology.forEach((item) => {
-        lines.push(`[${item.type.toUpperCase()}] ${item.title}`)
-        lines.push(item.description)
-        lines.push(`Root cause: ${item.rootCause}`)
-        lines.push(`Resolution: ${item.resolution}`)
-        lines.push('')
-      })
-      lines.push(`${'='.repeat(60)}\n`)
-    }
+  // Title
+  children.push(new Paragraph({
+    heading: HeadingLevel.HEADING_1,
+    children: [new TextRun({ text: 'PRISM Analysis Brief', bold: true })]
+  }))
 
-    if (analysis.methodologicalCritique) {
-      lines.push(`METHODOLOGICAL CRITIQUE`)
-      lines.push(`Systematic problems in how this field does science\n`)
-      analysis.methodologicalCritique.forEach((item) => {
-        lines.push(`[${item.severity.toUpperCase()}] ${item.issue}`)
-        lines.push(item.description)
-        lines.push(`Affected: ${item.affected}`)
-        lines.push(`Remedy: ${item.remedy}`)
-        lines.push('')
-      })
-      lines.push(`${'='.repeat(60)}\n`)
-    }
+  children.push(new Paragraph({
+    children: [new TextRun({ text: `Topic: ${query}`, italics: true })]
+  }))
+  children.push(new Paragraph({
+    children: [new TextRun({ text: `Papers: ${papers.length} · Generated: ${new Date().toLocaleDateString()}` })]
+  }))
+  children.push(new Paragraph({ children: [new TextRun('')] }))
 
-    if (analysis.hypotheses) {
-      lines.push(`HYPOTHESIS NUDGES`)
-      lines.push(`Directions worth pursuing\n`)
-      analysis.hypotheses.forEach((item, i) => {
-        lines.push(`Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`)
-        lines.push(item.nudge)
-        lines.push(`Rationale: ${item.rationale}`)
-        if (item.tags?.length) lines.push(`Tags: ${item.tags.join(', ')}`)
-        lines.push('')
-      })
-      lines.push(`${'='.repeat(60)}\n`)
-    }
-
-    lines.push(`CORPUS — ${papers.length} papers`)
-    papers.forEach((p) => {
-      lines.push(`- ${p.title} (${p.year}) — ${p.source}`)
+  // Absence Mapping
+  if (analysis.absenceMapping) {
+    children.push(new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      children: [new TextRun('Absence Mapping')]
+    }))
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'What this field isn\'t studying — and why it matters', italics: true })]
+    }))
+    children.push(new Paragraph({ children: [new TextRun('')] }))
+    analysis.absenceMapping.forEach((item) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `[${item.significance.toUpperCase()}] `, bold: true }),
+          new TextRun({ text: item.category, bold: true }),
+        ]
+      }))
+      children.push(new Paragraph({
+        children: [new TextRun(item.description)]
+      }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
     })
-
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.txt`
-    a.click()
-    URL.revokeObjectURL(url)
   }
+
+  // Tension Topology
+  if (analysis.tensionTopology) {
+    children.push(new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      children: [new TextRun('Tension Topology')]
+    }))
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })]
+    }))
+    children.push(new Paragraph({ children: [new TextRun('')] }))
+    analysis.tensionTopology.forEach((item) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `[${item.type.toUpperCase()}] `, bold: true }),
+          new TextRun({ text: item.title, bold: true }),
+        ]
+      }))
+      children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: 'Root cause: ', bold: true }),
+          new TextRun(item.rootCause)
+        ]
+      }))
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: 'Resolution: ', bold: true }),
+          new TextRun(item.resolution)
+        ]
+      }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+    })
+  }
+
+  // Methodological Critique
+  if (analysis.methodologicalCritique) {
+    children.push(new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      children: [new TextRun('Methodological Critique')]
+    }))
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })]
+    }))
+    children.push(new Paragraph({ children: [new TextRun('')] }))
+    analysis.methodologicalCritique.forEach((item) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `[${item.severity.toUpperCase()}] `, bold: true }),
+          new TextRun({ text: item.issue, bold: true }),
+        ]
+      }))
+      children.push(new Paragraph({ children: [new TextRun(item.description)] }))
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: 'Affected: ', bold: true }),
+          new TextRun(item.affected)
+        ]
+      }))
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: 'Remedy: ', bold: true }),
+          new TextRun(item.remedy)
+        ]
+      }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+    })
+  }
+
+  // Hypotheses
+  if (analysis.hypotheses) {
+    children.push(new Paragraph({
+      heading: HeadingLevel.HEADING_2,
+      children: [new TextRun('Hypothesis Nudges')]
+    }))
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'Directions worth pursuing — the connections are yours to make', italics: true })]
+    }))
+    children.push(new Paragraph({ children: [new TextRun('')] }))
+    analysis.hypotheses.forEach((item, i) => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: `Nudge ${i + 1}`, bold: true }),
+          new TextRun({ text: item.labAddressable ? ' [LAB-ADDRESSABLE]' : '', bold: true }),
+          new TextRun({ text: ` — ${item.confidence} confidence` }),
+        ]
+      }))
+      children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: 'Rationale: ', bold: true }),
+          new TextRun(item.rationale)
+        ]
+      }))
+      if (item.tags?.length) {
+        children.push(new Paragraph({
+          children: [
+            new TextRun({ text: 'Tags: ', bold: true }),
+            new TextRun(item.tags.join(', '))
+          ]
+        }))
+      }
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+    })
+  }
+
+  // Corpus
+  children.push(new Paragraph({
+    heading: HeadingLevel.HEADING_2,
+    children: [new TextRun(`Corpus — ${papers.length} papers`)]
+  }))
+  papers.forEach((p) => {
+    children.push(new Paragraph({
+      children: [
+        new TextRun({ text: p.title, bold: true }),
+        new TextRun({ text: ` (${p.year}) — ${p.source}` }),
+      ]
+    }))
+  })
+
+  const doc = new Document({
+    styles: {
+      default: {
+        document: { run: { font: 'Arial', size: 24 } }
+      },
+      paragraphStyles: [
+        {
+          id: 'Heading1', name: 'Heading 1', basedOn: 'Normal', next: 'Normal', quickFormat: true,
+          run: { size: 36, bold: true, font: 'Arial' },
+          paragraph: { spacing: { before: 240, after: 120 }, outlineLevel: 0 }
+        },
+        {
+          id: 'Heading2', name: 'Heading 2', basedOn: 'Normal', next: 'Normal', quickFormat: true,
+          run: { size: 28, bold: true, font: 'Arial' },
+          paragraph: { spacing: { before: 200, after: 100 }, outlineLevel: 1 }
+        },
+      ]
+    },
+    sections: [{
+      properties: {
+        page: {
+          size: { width: 12240, height: 15840 },
+          margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+        }
+      },
+      children
+    }]
+  })
+
+  const buffer = await Packer.toBlob(doc)
+  const url = URL.createObjectURL(buffer)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.docx`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
   const navItems = [
     { key: 'overview', label: 'Overview', color: COLORS.accent },

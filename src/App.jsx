@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import '@fontsource/dm-mono'
+import { Analytics } from '@vercel/analytics/react'
 
 const COLORS = {
   bg: '#080c0f',
@@ -960,6 +961,7 @@ export default function App() {
           </div>
         )}
       </div>
+      <Analytics />
     </div>
   )
 }

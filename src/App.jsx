@@ -546,7 +546,7 @@ export default function App() {
     localStorage.removeItem('prism_summary')
     log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
-    const perTerm = Math.ceil(paperCount / proposedTerms.length)
+    const perTerm = Math.ceil(paperCount / proposedTerms.length * 2.5)
 
     const termResults = await Promise.all(
       proposedTerms.map(async (term, index) => {

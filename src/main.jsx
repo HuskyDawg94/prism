@@ -1,11 +1,22 @@
-import '@fontsource/dm-mono'
-import { StrictMode } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import './index.css'
 import App from './App.jsx'
+import Landing from './Landing.jsx'
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+function Root() {
+  const [entered, setEntered] = useState(() => {
+    return !!localStorage.getItem('prism_entered')
+  })
+
+  function handleEnter() {
+    localStorage.setItem('prism_entered', 'true')
+    setEntered(true)
+  }
+
+  if (entered) {
+    return <App />
+  }
+  return <Landing onEnter={handleEnter} />
+}
+
+createRoot(document.getElementById('root')).render(<Root />)

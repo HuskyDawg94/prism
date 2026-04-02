@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import '@fontsource/dm-mono'
 
 const COLORS = {
@@ -255,9 +255,9 @@ const styles = {
   btn: (variant) => ({
     padding: '8px 16px',
     borderRadius: '6px',
-    border: `1px solid ${variant === 'primary' ? COLORS.accent : COLORS.border2}`,
-    background: variant === 'primary' ? 'rgba(74,242,161,0.1)' : 'transparent',
-    color: variant === 'primary' ? COLORS.accent : COLORS.muted,
+    border: `1px solid ${variant === 'primary' ? COLORS.accent : variant === 'danger' ? COLORS.red : COLORS.border2}`,
+    background: variant === 'primary' ? 'rgba(74,242,161,0.1)' : variant === 'danger' ? 'rgba(255,95,95,0.1)' : 'transparent',
+    color: variant === 'primary' ? COLORS.accent : variant === 'danger' ? COLORS.red : COLORS.muted,
     fontFamily: '"DM Mono", monospace',
     fontSize: '12px',
     cursor: 'pointer',
@@ -353,26 +353,60 @@ function PrismLogo() {
 const BACKEND = 'https://prism-backend-8ac5.onrender.com'
 
 export default function App() {
-  const [stage, setStage] = useState('onboarding')
+  const [stage, setStage] = useState(() => {
+    const savedPapers = localStorage.getItem('prism_papers')
+    if (savedPapers && JSON.parse(savedPapers).length > 0) return 'results'
+    return 'onboarding'
+  })
   const [activePanel, setActivePanel] = useState('overview')
-  const [query, setQuery] = useState('')
-  const [proposedTerms, setProposedTerms] = useState([])
-  const [papers, setPapers] = useState([])
+  const [query, setQuery] = useState(() => localStorage.getItem('prism_query') || '')
+  const [proposedTerms, setProposedTerms] = useState(() => {
+    const saved = localStorage.getItem('prism_terms')
+    return saved ? JSON.parse(saved) : []
+  })
+  const [papers, setPapers] = useState(() => {
+    const saved = localStorage.getItem('prism_papers')
+    return saved ? JSON.parse(saved) : []
+  })
+  const [analysis, setAnalysis] = useState(() => {
+    const saved = localStorage.getItem('prism_analysis')
+    return saved ? JSON.parse(saved) : {}
+  })
+  const [summary, setSummary] = useState(() => localStorage.getItem('prism_summary') || '')
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
-  const [analysis, setAnalysis] = useState({})
-  const [summary, setSummary] = useState('')
   const [paperCount, setPaperCount] = useState(50)
   const [processLog, setProcessLog] = useState([])
-  const [researcherProfile, setResearcherProfile] = useState({
-    name: '',
-    institution: '',
-    careerStage: 'undergraduate',
-    methods: [],
-    domains: [],
-    customMethods: '',
-    customDomains: '',
+  const [researcherProfile, setResearcherProfile] = useState(() => {
+    const saved = localStorage.getItem('prism_profile')
+    return saved ? JSON.parse(saved) : {
+      name: '',
+      institution: '',
+      careerStage: 'undergraduate',
+      methods: [],
+      domains: [],
+      customMethods: '',
+      customDomains: '',
+    }
   })
+
+  useEffect(() => { localStorage.setItem('prism_query', query) }, [query])
+  useEffect(() => { localStorage.setItem('prism_terms', JSON.stringify(proposedTerms)) }, [proposedTerms])
+  useEffect(() => { localStorage.setItem('prism_papers', JSON.stringify(papers)) }, [papers])
+  useEffect(() => { localStorage.setItem('prism_analysis', JSON.stringify(analysis)) }, [analysis])
+  useEffect(() => { localStorage.setItem('prism_summary', summary) }, [summary])
+  useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
+
+  function clearSession() {
+    localStorage.clear()
+    setQuery('')
+    setProposedTerms([])
+    setPapers([])
+    setAnalysis({})
+    setSummary('')
+    setProcessLog([])
+    setStage('input')
+  }
 
   function log(msg) {
     const time = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
@@ -482,6 +516,9 @@ export default function App() {
     setSummary('')
     setAnalysis({})
     setProcessLog([])
+    localStorage.removeItem('prism_papers')
+    localStorage.removeItem('prism_analysis')
+    localStorage.removeItem('prism_summary')
     log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
     const allPapers = []
@@ -584,6 +621,78 @@ export default function App() {
       'hypotheses',
       'Generating hypotheses...'
     )
+  }
+
+  function exportBrief() {
+    const lines = []
+    lines.push(`PRISM ANALYSIS BRIEF`)
+    lines.push(`Topic: ${query}`)
+    lines.push(`Papers: ${papers.length}`)
+    lines.push(`Generated: ${new Date().toLocaleDateString()}`)
+    lines.push(`\n${'='.repeat(60)}\n`)
+
+    if (analysis.absenceMapping) {
+      lines.push(`ABSENCE MAPPING`)
+      lines.push(`What this field isn't studying\n`)
+      analysis.absenceMapping.forEach((item) => {
+        lines.push(`[${item.significance.toUpperCase()}] ${item.category}`)
+        lines.push(item.description)
+        lines.push('')
+      })
+      lines.push(`${'='.repeat(60)}\n`)
+    }
+
+    if (analysis.tensionTopology) {
+      lines.push(`TENSION TOPOLOGY`)
+      lines.push(`Where and why researchers disagree\n`)
+      analysis.tensionTopology.forEach((item) => {
+        lines.push(`[${item.type.toUpperCase()}] ${item.title}`)
+        lines.push(item.description)
+        lines.push(`Root cause: ${item.rootCause}`)
+        lines.push(`Resolution: ${item.resolution}`)
+        lines.push('')
+      })
+      lines.push(`${'='.repeat(60)}\n`)
+    }
+
+    if (analysis.methodologicalCritique) {
+      lines.push(`METHODOLOGICAL CRITIQUE`)
+      lines.push(`Systematic problems in how this field does science\n`)
+      analysis.methodologicalCritique.forEach((item) => {
+        lines.push(`[${item.severity.toUpperCase()}] ${item.issue}`)
+        lines.push(item.description)
+        lines.push(`Affected: ${item.affected}`)
+        lines.push(`Remedy: ${item.remedy}`)
+        lines.push('')
+      })
+      lines.push(`${'='.repeat(60)}\n`)
+    }
+
+    if (analysis.hypotheses) {
+      lines.push(`HYPOTHESIS NUDGES`)
+      lines.push(`Directions worth pursuing\n`)
+      analysis.hypotheses.forEach((item, i) => {
+        lines.push(`Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`)
+        lines.push(item.nudge)
+        lines.push(`Rationale: ${item.rationale}`)
+        if (item.tags?.length) lines.push(`Tags: ${item.tags.join(', ')}`)
+        lines.push('')
+      })
+      lines.push(`${'='.repeat(60)}\n`)
+    }
+
+    lines.push(`CORPUS — ${papers.length} papers`)
+    papers.forEach((p) => {
+      lines.push(`- ${p.title} (${p.year}) — ${p.source}`)
+    })
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `prism-brief-${query.replace(/\s+/g, '-').toLowerCase()}-${Date.now()}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const navItems = [
@@ -796,6 +905,17 @@ export default function App() {
           </div>
         ))}
 
+        <div style={styles.sidebarLabel}>Export</div>
+        <div style={{ padding: '4px 12px' }}>
+          <button
+            style={{ ...styles.btn('secondary'), width: '100%', fontSize: '11px', padding: '6px 10px' }}
+            onClick={exportBrief}
+            disabled={!papers.length}
+          >
+            Export Brief
+          </button>
+        </div>
+
         <div style={styles.sidebarLabel}>Session</div>
         <div style={styles.sidebarItem(false)} onClick={() => setStage('input')}>
           <div style={styles.dot(COLORS.muted)} />
@@ -804,6 +924,10 @@ export default function App() {
         <div style={styles.sidebarItem(false)} onClick={() => setStage('onboarding')}>
           <div style={styles.dot(COLORS.muted)} />
           Edit Profile
+        </div>
+        <div style={styles.sidebarItem(false)} onClick={clearSession}>
+          <div style={styles.dot(COLORS.red)} />
+          Clear Session
         </div>
       </div>
 

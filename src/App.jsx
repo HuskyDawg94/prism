@@ -477,7 +477,6 @@ export default function App() {
     setProposedTerms(proposedTerms.filter((_, idx) => idx !== i))
   }
 
-  // SPEED FIX 1: Batch abstract fetching — fetch 10 at a time instead of 1 at a time
   async function fetchAbstracts(paperList) {
     const result = []
     const batchSize = 10
@@ -504,14 +503,12 @@ export default function App() {
           if (match) {
             result.push({ ...paper, abstract: match[1] })
           } else {
-            const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
-            result.push({ ...paper, abstract: simpleMatch ? simpleMatch[1] : 'No abstract available' })
+            result.push({ ...paper, abstract: 'No abstract available' })
           }
         })
       } catch {
         batch.forEach((paper) => result.push({ ...paper, abstract: 'No abstract available' }))
       }
-
       await new Promise((r) => setTimeout(r, 200))
     }
 
@@ -551,9 +548,9 @@ export default function App() {
 
     const perTerm = Math.ceil(paperCount / proposedTerms.length)
 
-    // SPEED FIX 2: Parallel term searches — all terms fire simultaneously
     const termResults = await Promise.all(
-      proposedTerms.map(async (term) => {
+      proposedTerms.map(async (term, index) => {
+        await new Promise((r) => setTimeout(r, index * 400))
         try {
           const searchRes = await fetch(
             `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
@@ -589,7 +586,6 @@ export default function App() {
       })
     )
 
-    // Deduplicate across terms
     const seen = new Set()
     const allPapers = []
     for (const batch of termResults) {
@@ -609,7 +605,6 @@ export default function App() {
     log('Abstract retrieval complete')
     setLoading(false)
 
-    // SPEED FIX 3: Build summary in background while user reviews overview
     log('Building corpus summary in background...')
     buildSummary(withAbstracts)
   }
@@ -729,9 +724,7 @@ export default function App() {
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.hypotheses.forEach((item, i) => {
         children.push(new Paragraph({
-          children: [
-            new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })
-          ]
+          children: [new TextRun({ text: `Nudge ${i + 1}${item.labAddressable ? ' [LAB-ADDRESSABLE]' : ''} — ${item.confidence} confidence`, bold: true })]
         }))
         children.push(new Paragraph({ children: [new TextRun(item.nudge)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Rationale: ', bold: true }), new TextRun(item.rationale)] }))

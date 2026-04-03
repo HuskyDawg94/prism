@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import '@fontsource/dm-mono'
 import { Analytics } from '@vercel/analytics/react'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
@@ -379,6 +379,7 @@ export default function App() {
   const [loadingMessage, setLoadingMessage] = useState('')
   const [paperCount, setPaperCount] = useState(50)
   const [processLog, setProcessLog] = useState([])
+  const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
     const saved = localStorage.getItem('prism_profile')
     return saved ? JSON.parse(saved) : {
@@ -574,8 +575,6 @@ export default function App() {
     return finalSummary
   }
 
-  const summaryBuildRef = { current: null }
-
   async function getOrBuildSummary() {
     if (summary) return summary
     // If a build is already in progress, wait for it instead of starting another
@@ -671,9 +670,19 @@ export default function App() {
     setLoadingMessage(successMsg)
     log(successMsg)
     const syn = await getOrBuildSummary()
-    const text = await callClaude(promptFn(syn), 4000)
-    const cleaned = text.replace(/```json|```/g, '').trim()
-    const result = JSON.parse(cleaned)
+    let result
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const text = await callClaude(promptFn(syn), 4000)
+        const cleaned = text.replace(/```json|```/g, '').trim()
+        result = JSON.parse(cleaned)
+        break
+      } catch (e) {
+        if (attempt === 3) throw e
+        log(`${successMsg} parse failed, retrying (${attempt}/3)...`)
+        await new Promise(r => setTimeout(r, 1500))
+      }
+    }
     setAnalysis((prev) => ({ ...prev, [moduleKey]: result[parseKey] }))
     log(`${successMsg} complete`)
     setLoading(false)
@@ -810,16 +819,32 @@ ${priorAnalysis}`, 4000)
     // Step 2: Absence mapping, tension topology, methodological critique in parallel
     setLoadingMessage('Running absence mapping, tension topology, method critique...')
     log('Run All: running parallel modules...')
+    async function callWithRetry(prompt, parseKey, tokens = 4000) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const text = await callClaude(prompt, tokens)
+          return JSON.parse(text.replace(/```json|```/g, '').trim())[parseKey]
+        } catch (e) {
+          if (attempt === 3) throw e
+          log(`Parse failed, retrying (${attempt}/3)...`)
+          await new Promise(r => setTimeout(r, 1500))
+        }
+      }
+    }
+
     const [absences, tensions, critiques] = await Promise.all([
-      callClaude(
-        `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`
-      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).absences),
-      callClaude(
-        `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`
-      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).tensions),
-      callClaude(
-        `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`
-      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).critiques),
+      callWithRetry(
+        `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`,
+        'absences'
+      ),
+      callWithRetry(
+        `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`,
+        'tensions'
+      ),
+      callWithRetry(
+        `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`,
+        'critiques'
+      ),
     ])
 
     setAnalysis((prev) => ({

@@ -582,16 +582,16 @@ export default function App() {
     )
 
     const seen = new Set()
-const allPapers = []
-for (const batch of termResults) {
-  for (const paper of batch) {
-    if (!seen.has(paper.id)) {
-      seen.add(paper.id)
-      allPapers.push(paper)
+    const allPapers = []
+    for (const batch of termResults) {
+      for (const paper of batch) {
+        if (!seen.has(paper.id)) {
+          seen.add(paper.id)
+          allPapers.push(paper)
+        }
+      }
     }
-  }
-}
-allPapers.splice(paperCount)
+    allPapers.splice(paperCount)
 
     log(`Found ${allPapers.length} unique papers`)
     setLoadingMessage('Fetching abstracts...')
@@ -737,6 +737,126 @@ ${priorAnalysis}`, 4000)
     setActivePanel('fieldDiagnostic')
   }
 
+  async function runAllModules() {
+    setLoading(true)
+
+    // Step 1: Build corpus summary if not cached
+    setLoadingMessage('Building corpus summary...')
+    log('Run All: building corpus summary...')
+    const syn = await getOrBuildSummary()
+
+    // Step 2: Absence mapping, tension topology, methodological critique in parallel
+    setLoadingMessage('Running absence mapping, tension topology, method critique...')
+    log('Run All: running parallel modules...')
+    const [absences, tensions, critiques] = await Promise.all([
+      callClaude(
+        `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`
+      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).absences),
+      callClaude(
+        `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`
+      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).tensions),
+      callClaude(
+        `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`
+      ).then((text) => JSON.parse(text.replace(/```json|```/g, '').trim()).critiques),
+    ])
+
+    setAnalysis((prev) => ({
+      ...prev,
+      absenceMapping: absences,
+      tensionTopology: tensions,
+      methodologicalCritique: critiques,
+    }))
+    log('Run All: parallel modules complete')
+
+    // Step 3: Hypothesis generation (depends on step 2 results)
+    setLoadingMessage('Generating hypotheses...')
+    log('Run All: generating hypotheses...')
+    const { methods, domains } = buildProfileString()
+    const priorForHypotheses = [
+      `ABSENCES:\n${absences.map((a) => `- ${a.category}: ${a.description}`).join('\n')}`,
+      `TENSIONS:\n${tensions.map((t) => `- ${t.title}: ${t.rootCause}`).join('\n')}`,
+      `CRITIQUES:\n${critiques.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}`,
+    ].join('\n\n')
+
+    const hypothesesText = await callClaude(
+      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`
+    )
+    const hypotheses = JSON.parse(hypothesesText.replace(/```json|```/g, '').trim()).hypotheses
+    setAnalysis((prev) => ({ ...prev, hypotheses }))
+    log('Run All: hypotheses complete')
+
+    // Step 4: Field diagnostic (depends on all prior results)
+    setLoadingMessage('Running field diagnostic...')
+    log('Run All: running field diagnostic...')
+    const priorForDiagnostic = [
+      `ABSENCES:\n${absences.map((a) => `- ${a.category}: ${a.description}`).join('\n')}`,
+      `TENSIONS:\n${tensions.map((t) => `- ${t.title}: ${t.rootCause}`).join('\n')}`,
+      `CRITIQUES:\n${critiques.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}`,
+      `HYPOTHESES:\n${hypotheses.map((h) => `- ${h.nudge}`).join('\n')}`,
+    ].join('\n\n')
+
+    const diagnosticText = await callClaude(`You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
+
+Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
+
+Return ONLY this JSON, no markdown:
+{
+  "dimensions": [
+    {
+      "name": "Methodological Integrity",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Theoretical Consensus",
+      "score": 6,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Population Coverage",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Longitudinal Depth",
+      "score": 2,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Replication Robustness",
+      "score": 3,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    },
+    {
+      "name": "Cross-disciplinary Integration",
+      "score": 4,
+      "verdict": "one sentence assessment",
+      "detail": "2-3 sentences explaining the score"
+    }
+  ],
+  "overallScore": 3.7,
+  "overallVerdict": "2-3 sentence plain language summary of the field epistemic health",
+  "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
+}
+
+LITERATURE SYNTHESIS:
+${syn}
+
+PRIOR ANALYSIS:
+${priorForDiagnostic}`, 4000)
+
+    const diagnosticResult = JSON.parse(diagnosticText.replace(/```json|```/g, '').trim())
+    setAnalysis((prev) => ({ ...prev, fieldDiagnostic: diagnosticResult }))
+    log('Run All: complete')
+    setLoading(false)
+    setActivePanel('fieldDiagnostic')
+  }
+
   async function exportBrief() {
     const children = []
 
@@ -866,6 +986,7 @@ ${priorAnalysis}`, 4000)
     { label: 'Method Critique', fn: runMethodologicalCritique, done: !!analysis.methodologicalCritique },
     { label: 'Hypotheses', fn: runHypothesisGeneration, done: !!analysis.hypotheses },
     { label: 'Field Diagnostic', fn: runFieldDiagnostic, done: !!analysis.fieldDiagnostic },
+    { label: 'Run All Modules', fn: runAllModules, done: !!analysis.fieldDiagnostic },
   ]
 
   if (stage === 'onboarding') {

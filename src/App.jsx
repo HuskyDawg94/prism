@@ -548,7 +548,7 @@ export default function App() {
           .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
           .join('\n\n---\n\n')
         return callClaude(
-          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 500-800 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
+          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 400-600 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
           2000
         )
       })
@@ -564,8 +564,8 @@ export default function App() {
         .map((s, i) => `CHUNK ${i + 1}:\n${s}`)
         .join('\n\n===\n\n')
       finalSummary = await callClaude(
-        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-3000 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
-        4000
+        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-2500 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
+        3500
       )
     }
 
@@ -660,7 +660,7 @@ export default function App() {
     setLoadingMessage(successMsg)
     log(successMsg)
     const syn = await getOrBuildSummary()
-    const text = await callClaude(promptFn(syn), 4000)
+    const text = await callClaude(promptFn(syn), 3000)
     const cleaned = text.replace(/```json|```/g, '').trim()
     const result = JSON.parse(cleaned)
     setAnalysis((prev) => ({ ...prev, [moduleKey]: result[parseKey] }))
@@ -778,7 +778,7 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorAnalysis}`, 4000)
+${priorAnalysis}`, 3250)
 
     const cleaned = text.replace(/```json|```/g, '').trim()
     const result = JSON.parse(cleaned)
@@ -899,7 +899,7 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorForDiagnostic}`, 4000)
+${priorForDiagnostic}`, 3250)
 
     const diagnosticResult = JSON.parse(diagnosticText.replace(/```json|```/g, '').trim())
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: diagnosticResult }))

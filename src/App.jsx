@@ -441,12 +441,12 @@ export default function App() {
     return { methods, domains }
   }
 
-  async function callClaude(prompt, maxTokens = 4500) {
+  async function callClaude(prompt, maxTokens = 2000) {
     const response = await fetch(`${BACKEND}/api/claude`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-4-5',
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -548,8 +548,8 @@ export default function App() {
           .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
           .join('\n\n---\n\n')
         return callClaude(
-          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 400-600 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
-          2000
+          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 300-500 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
+          4000
         )
       })
     )
@@ -564,8 +564,8 @@ export default function App() {
         .map((s, i) => `CHUNK ${i + 1}:\n${s}`)
         .join('\n\n===\n\n')
       finalSummary = await callClaude(
-        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-2500 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
-        3500
+        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-3000 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
+        4000
       )
     }
 
@@ -574,10 +574,20 @@ export default function App() {
     return finalSummary
   }
 
+  const summaryBuildRef = { current: null }
+
   async function getOrBuildSummary() {
     if (summary) return summary
+    // If a build is already in progress, wait for it instead of starting another
+    if (summaryBuildRef.current) {
+      log('Waiting for in-progress synthesis...')
+      return await summaryBuildRef.current
+    }
     log('Condensing corpus...')
-    return await buildSummary(papers)
+    summaryBuildRef.current = buildSummary(papers)
+    const result = await summaryBuildRef.current
+    summaryBuildRef.current = null
+    return result
   }
 
   async function runSearch() {
@@ -652,7 +662,8 @@ export default function App() {
     log(`Abstract retrieval complete — ${withAbstracts.length} papers`)
     setLoading(false)
     log('Building corpus synthesis in background...')
-    buildSummary(withAbstracts)
+    summaryBuildRef.current = buildSummary(withAbstracts)
+    summaryBuildRef.current.then(() => { summaryBuildRef.current = null })
   }
 
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
@@ -660,7 +671,7 @@ export default function App() {
     setLoadingMessage(successMsg)
     log(successMsg)
     const syn = await getOrBuildSummary()
-    const text = await callClaude(promptFn(syn), 3000)
+    const text = await callClaude(promptFn(syn), 4000)
     const cleaned = text.replace(/```json|```/g, '').trim()
     const result = JSON.parse(cleaned)
     setAnalysis((prev) => ({ ...prev, [moduleKey]: result[parseKey] }))
@@ -778,7 +789,7 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorAnalysis}`, 3250)
+${priorAnalysis}`, 4000)
 
     const cleaned = text.replace(/```json|```/g, '').trim()
     const result = JSON.parse(cleaned)
@@ -899,7 +910,7 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorForDiagnostic}`, 3250)
+${priorForDiagnostic}`, 4000)
 
     const diagnosticResult = JSON.parse(diagnosticText.replace(/```json|```/g, '').trim())
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: diagnosticResult }))

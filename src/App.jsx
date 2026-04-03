@@ -530,7 +530,7 @@ export default function App() {
   }
 
   async function buildSummary(paperList) {
-    const chunkSize = 10
+    const chunkSize = 5
     const chunks = []
     for (let i = 0; i < paperList.length; i += chunkSize) {
       chunks.push(paperList.slice(i, i + chunkSize))
@@ -552,7 +552,7 @@ export default function App() {
         3000
       )
       chunkSummaries.push(chunkResult)
-      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 4000))
+      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 15000))
     }
 
     let finalSummary

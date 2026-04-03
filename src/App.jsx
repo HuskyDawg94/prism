@@ -530,43 +530,42 @@ export default function App() {
   }
 
   async function buildSummary(paperList) {
-    const chunkSize = 5
+    // Tier 2: 450k input TPM — can run chunks in parallel safely
+    // Chunk size 20: ~20 abstracts * ~400 tokens each = ~8k tokens/chunk, well under limits
+    const chunkSize = 20
     const chunks = []
     for (let i = 0; i < paperList.length; i += chunkSize) {
       chunks.push(paperList.slice(i, i + chunkSize))
     }
 
-    log(`Building synthesis across ${chunks.length} chunk(s) of papers...`)
+    log(`Building synthesis across ${chunks.length} chunk(s) in parallel...`)
+    setLoadingMessage(`Synthesizing ${paperList.length} papers across ${chunks.length} chunks...`)
 
-    // Synthesize each chunk sequentially to avoid rate limits
-    const chunkSummaries = []
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i]
-      log(`Synthesizing chunk ${i + 1} of ${chunks.length}...`)
-      setLoadingMessage(`Synthesizing papers ${i * chunkSize + 1}–${Math.min((i + 1) * chunkSize, paperList.length)} of ${paperList.length}...`)
-      const corpus = chunk
-        .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
-        .join('\n\n---\n\n')
-      const chunkResult = await callClaude(
-        `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 600-900 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
-        3000
-      )
-      chunkSummaries.push(chunkResult)
-      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 15000))
-    }
+    // Parallel chunk synthesis — safe at Tier 2
+    const chunkSummaries = await Promise.all(
+      chunks.map((chunk, i) => {
+        const corpus = chunk
+          .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
+          .join('\n\n---\n\n')
+        return callClaude(
+          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 500-800 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
+          2000
+        )
+      })
+    )
 
     let finalSummary
     if (chunks.length === 1) {
       finalSummary = chunkSummaries[0]
     } else {
-      // Merge chunk summaries into a master synthesis
       log('Merging chunk syntheses into master synthesis...')
+      setLoadingMessage('Merging into master synthesis...')
       const mergeInput = chunkSummaries
         .map((s, i) => `CHUNK ${i + 1}:\n${s}`)
         .join('\n\n===\n\n')
       finalSummary = await callClaude(
-        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single comprehensive master synthesis. Integrate all chunks into a unified 2000-4000 word synthesis that captures: (1) the major empirical findings and where they agree or conflict, (2) the dominant methodological approaches and their limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
-        6000
+        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-3000 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
+        4000
       )
     }
 

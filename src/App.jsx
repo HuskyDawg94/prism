@@ -377,6 +377,7 @@ export default function App() {
   const [summary, setSummary] = useState(() => localStorage.getItem('prism_summary') || '')
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
+  const [error, setError] = useState(null)
   const [paperCount, setPaperCount] = useState(50)
   const [processLog, setProcessLog] = useState([])
   const summaryBuildRef = useRef(null)
@@ -408,7 +409,7 @@ export default function App() {
     setAnalysis({})
     setSummary('')
     setProcessLog([])
-    setStage('input')
+    setStage('onboarding')
   }
 
   function log(msg) {
@@ -591,12 +592,14 @@ export default function App() {
 
   async function runSearch() {
     setLoading(true)
+    setError(null)
     setStage('results')
     setActivePanel('overview')
     setLoadingMessage('Searching PubMed...')
     setSummary('')
     setAnalysis({})
     setProcessLog([])
+    try {
     localStorage.removeItem('prism_papers')
     localStorage.removeItem('prism_analysis')
     localStorage.removeItem('prism_summary')
@@ -663,6 +666,11 @@ export default function App() {
     log('Building corpus synthesis in background...')
     summaryBuildRef.current = buildSummary(withAbstracts)
     summaryBuildRef.current.then(() => { summaryBuildRef.current = null })
+    } catch (err) {
+      console.error('runSearch error:', err)
+      setError('Search failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   // Shared retry helper — wraps any callClaude + JSON.parse with up to 3 attempts
@@ -683,14 +691,21 @@ export default function App() {
 
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
     setLoading(true)
-    setLoadingMessage(successMsg)
-    log(successMsg)
-    const syn = await getOrBuildSummary()
-    const result = await callWithRetry(promptFn(syn), parseKey, 4000)
-    setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
-    log(`${successMsg} complete`)
-    setLoading(false)
-    setActivePanel(moduleKey)
+    setError(null)
+    try {
+      setLoadingMessage(successMsg)
+      log(successMsg)
+      const syn = await getOrBuildSummary()
+      const result = await callWithRetry(promptFn(syn), parseKey, 4000)
+      setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
+      log(`${successMsg} complete`)
+      setLoading(false)
+      setActivePanel(moduleKey)
+    } catch (err) {
+      console.error('runModule error:', err)
+      setError('Analysis failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   async function runAbsenceMapping() {
@@ -729,21 +744,30 @@ export default function App() {
     ].filter(Boolean).join('\n\n')
 
     setLoading(true)
-    setLoadingMessage('Generating hypotheses...')
-    log('Generating hypotheses...')
-    const syn = await getOrBuildSummary()
-    const hypotheses = await callWithRetry(
-      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
-      'hypotheses', 6000
-    )
-    setAnalysis((prev) => ({ ...prev, hypotheses }))
-    log('Generating hypotheses... complete')
-    setLoading(false)
-    setActivePanel('hypotheses')
+    setError(null)
+    try {
+      setLoadingMessage('Generating hypotheses...')
+      log('Generating hypotheses...')
+      const syn = await getOrBuildSummary()
+      const hypotheses = await callWithRetry(
+        `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
+        'hypotheses', 6000
+      )
+      setAnalysis((prev) => ({ ...prev, hypotheses }))
+      log('Generating hypotheses... complete')
+      setLoading(false)
+      setActivePanel('hypotheses')
+    } catch (err) {
+      console.error('runHypothesisGeneration error:', err)
+      setError('Hypothesis generation failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   async function runFieldDiagnostic() {
     setLoading(true)
+    setError(null)
+    try {
     setLoadingMessage('Running field diagnostic...')
     log('Running field diagnostic...')
     const syn = await getOrBuildSummary()
@@ -815,10 +839,18 @@ ${priorAnalysis}`
     log('Field diagnostic complete')
     setLoading(false)
     setActivePanel('fieldDiagnostic')
+
+    } catch (err) {
+      console.error('runFieldDiagnostic error:', err)
+      setError('Field diagnostic failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   async function runAllModules() {
     setLoading(true)
+    setError(null)
+    try {
 
     // Step 1: Build corpus summary if not cached
     setLoadingMessage('Building corpus summary...')
@@ -938,6 +970,12 @@ ${priorForDiagnostic}`
     log('Run All: complete')
     setLoading(false)
     setActivePanel('fieldDiagnostic')
+
+    } catch (err) {
+      console.error('runAllModules error:', err)
+      setError('Analysis failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   async function exportBrief() {
@@ -1273,6 +1311,13 @@ ${priorForDiagnostic}`
       </div>
 
       <div style={styles.main}>
+        {error && (
+          <div style={{ ...styles.card, borderColor: COLORS.red, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ color: COLORS.red }}>{error}</span>
+            <button style={{ ...styles.btn('danger'), padding: '4px 10px', fontSize: '11px' }} onClick={() => setError(null)}>Dismiss</button>
+          </div>
+        )}
+
         {loading && (
           <div style={{ ...styles.card, borderColor: COLORS.accent }}>
             <span style={{ color: COLORS.accent }}>loading {loadingMessage}</span>

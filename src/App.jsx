@@ -441,7 +441,7 @@ export default function App() {
     return { methods, domains }
   }
 
-  async function callClaude(prompt, maxTokens = 2000) {
+  async function callClaude(prompt, maxTokens = 4000) {
     const response = await fetch(`${BACKEND}/api/claude`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -665,25 +665,29 @@ export default function App() {
     summaryBuildRef.current.then(() => { summaryBuildRef.current = null })
   }
 
+  // Shared retry helper — wraps any callClaude + JSON.parse with up to 3 attempts
+  async function callWithRetry(prompt, parseKey, tokens = 4000) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const text = await callClaude(prompt, tokens)
+        const cleaned = text.replace(/```json|```/g, '').trim()
+        const parsed = JSON.parse(cleaned)
+        return parseKey ? parsed[parseKey] : parsed
+      } catch (e) {
+        if (attempt === 3) throw e
+        log(`Parse failed, retrying (${attempt}/3)...`)
+        await new Promise(r => setTimeout(r, 2000))
+      }
+    }
+  }
+
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
     setLoading(true)
     setLoadingMessage(successMsg)
     log(successMsg)
     const syn = await getOrBuildSummary()
-    let result
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const text = await callClaude(promptFn(syn), 4000)
-        const cleaned = text.replace(/```json|```/g, '').trim()
-        result = JSON.parse(cleaned)
-        break
-      } catch (e) {
-        if (attempt === 3) throw e
-        log(`${successMsg} parse failed, retrying (${attempt}/3)...`)
-        await new Promise(r => setTimeout(r, 1500))
-      }
-    }
-    setAnalysis((prev) => ({ ...prev, [moduleKey]: result[parseKey] }))
+    const result = await callWithRetry(promptFn(syn), parseKey, 4000)
+    setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
     log(`${successMsg} complete`)
     setLoading(false)
     setActivePanel(moduleKey)
@@ -724,12 +728,18 @@ export default function App() {
       analysis.methodologicalCritique ? `CRITIQUES:\n${analysis.methodologicalCritique.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n')
 
-    await runModule(
-      'hypotheses',
-      (syn) => `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
-      'hypotheses',
-      'Generating hypotheses...'
+    setLoading(true)
+    setLoadingMessage('Generating hypotheses...')
+    log('Generating hypotheses...')
+    const syn = await getOrBuildSummary()
+    const hypotheses = await callWithRetry(
+      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
+      'hypotheses', 6000
     )
+    setAnalysis((prev) => ({ ...prev, hypotheses }))
+    log('Generating hypotheses... complete')
+    setLoading(false)
+    setActivePanel('hypotheses')
   }
 
   async function runFieldDiagnostic() {
@@ -745,7 +755,7 @@ export default function App() {
       analysis.hypotheses ? `HYPOTHESES:\n${analysis.hypotheses.map((h) => `- ${h.nudge}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n')
 
-    const text = await callClaude(`You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
+    const diagnosticPrompt = `You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
 
 Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
 
@@ -798,10 +808,9 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorAnalysis}`, 4000)
+${priorAnalysis}`
 
-    const cleaned = text.replace(/```json|```/g, '').trim()
-    const result = JSON.parse(cleaned)
+    const result = await callWithRetry(diagnosticPrompt, null, 6000)
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: result }))
     log('Field diagnostic complete')
     setLoading(false)
@@ -819,31 +828,18 @@ ${priorAnalysis}`, 4000)
     // Step 2: Absence mapping, tension topology, methodological critique in parallel
     setLoadingMessage('Running absence mapping, tension topology, method critique...')
     log('Run All: running parallel modules...')
-    async function callWithRetry(prompt, parseKey, tokens = 4000) {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const text = await callClaude(prompt, tokens)
-          return JSON.parse(text.replace(/```json|```/g, '').trim())[parseKey]
-        } catch (e) {
-          if (attempt === 3) throw e
-          log(`Parse failed, retrying (${attempt}/3)...`)
-          await new Promise(r => setTimeout(r, 1500))
-        }
-      }
-    }
-
     const [absences, tensions, critiques] = await Promise.all([
       callWithRetry(
         `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`,
-        'absences'
+        'absences', 4000
       ),
       callWithRetry(
         `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'tensions'
+        'tensions', 4000
       ),
       callWithRetry(
         `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'critiques'
+        'critiques', 4000
       ),
     ])
 
@@ -865,10 +861,10 @@ ${priorAnalysis}`, 4000)
       `CRITIQUES:\n${critiques.map((c) => `- ${c.issue}: ${c.description}`).join('\n')}`,
     ].join('\n\n')
 
-    const hypothesesText = await callClaude(
-      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`
+    const hypotheses = await callWithRetry(
+      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`,
+      'hypotheses', 6000
     )
-    const hypotheses = JSON.parse(hypothesesText.replace(/```json|```/g, '').trim()).hypotheses
     setAnalysis((prev) => ({ ...prev, hypotheses }))
     log('Run All: hypotheses complete')
 
@@ -882,7 +878,7 @@ ${priorAnalysis}`, 4000)
       `HYPOTHESES:\n${hypotheses.map((h) => `- ${h.nudge}`).join('\n')}`,
     ].join('\n\n')
 
-    const diagnosticText = await callClaude(`You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
+    const diagnosticPromptAll = `You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
 
 Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
 
@@ -935,9 +931,9 @@ LITERATURE SYNTHESIS:
 ${syn}
 
 PRIOR ANALYSIS:
-${priorForDiagnostic}`, 4000)
+${priorForDiagnostic}`
 
-    const diagnosticResult = JSON.parse(diagnosticText.replace(/```json|```/g, '').trim())
+    const diagnosticResult = await callWithRetry(diagnosticPromptAll, null, 6000)
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: diagnosticResult }))
     log('Run All: complete')
     setLoading(false)

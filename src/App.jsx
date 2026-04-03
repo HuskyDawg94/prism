@@ -544,7 +544,7 @@ export default function App() {
     localStorage.removeItem('prism_summary')
     log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
-    const perTerm = Math.ceil(paperCount / proposedTerms.length * 2.5)
+    const perTerm = Math.ceil(paperCount / proposedTerms.length * 1.5)
 
     const termResults = await Promise.all(
       proposedTerms.map(async (term, index) => {
@@ -582,15 +582,16 @@ export default function App() {
     )
 
     const seen = new Set()
-    const allPapers = []
-    for (const batch of termResults) {
-      for (const paper of batch) {
-        if (!seen.has(paper.id)) {
-          seen.add(paper.id)
-          allPapers.push(paper)
-        }
-      }
+const allPapers = []
+for (const batch of termResults) {
+  for (const paper of batch) {
+    if (!seen.has(paper.id)) {
+      seen.add(paper.id)
+      allPapers.push(paper)
     }
+  }
+}
+allPapers.splice(paperCount)
 
     log(`Found ${allPapers.length} unique papers`)
     setLoadingMessage('Fetching abstracts...')

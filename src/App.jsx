@@ -496,7 +496,7 @@ export default function App() {
           if (text.length > 100) sections.push(text)
         }
         if (sections.length > 0) {
-          const fullText = sections.join('\n\n').slice(0, 8000)
+          const fullText = sections.join('\n\n').slice(0, 1500)
           return { ...paper, fullText, textSource: 'full' }
         }
         // Fallback: extract abstract from PMC XML
@@ -573,7 +573,7 @@ export default function App() {
   }
 
   async function buildSummary(paperList) {
-    const chunkSize = 30
+    const chunkSize = 10
     const chunks = []
     for (let i = 0; i < paperList.length; i += chunkSize) {
       chunks.push(paperList.slice(i, i + chunkSize))
@@ -581,21 +581,25 @@ export default function App() {
 
     log(`Building synthesis across ${chunks.length} chunk(s) of papers...`)
 
-    // Synthesize each chunk separately
-    const chunkSummaries = await Promise.all(
-      chunks.map(async (chunk, i) => {
-        const corpus = chunk
-          .map((p) => {
-            const textLabel = p.textSource === 'full' ? 'Full text (excerpted)' : 'Abstract'
-            return `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\n${textLabel}: ${p.fullText || 'No text available'}`
-          })
-          .join('\n\n---\n\n')
-        return callClaude(
-          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 800-1200 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
-          4000
-        )
-      })
-    )
+    // Synthesize each chunk sequentially to avoid rate limits
+    const chunkSummaries = []
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]
+      log(`Synthesizing chunk ${i + 1} of ${chunks.length}...`)
+      setLoadingMessage(`Synthesizing papers ${i * chunkSize + 1}–${Math.min((i + 1) * chunkSize, paperList.length)} of ${paperList.length}...`)
+      const corpus = chunk
+        .map((p) => {
+          const textLabel = p.textSource === 'full' ? 'Full text (excerpted)' : 'Abstract'
+          return `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\n${textLabel}: ${p.fullText || 'No text available'}`
+        })
+        .join('\n\n---\n\n')
+      const chunkResult = await callClaude(
+        `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 600-900 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
+        3000
+      )
+      chunkSummaries.push(chunkResult)
+      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 4000))
+    }
 
     let finalSummary
     if (chunks.length === 1) {

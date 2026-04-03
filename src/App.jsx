@@ -508,7 +508,7 @@ export default function App() {
       } catch {
         batch.forEach((paper) => result.push({ ...paper, abstract: 'No abstract available' }))
       }
-      await new Promise((r) => setTimeout(r, 200))
+      await new Promise((r) => setTimeout(r, 100))
     }
     return result
   }
@@ -548,7 +548,7 @@ export default function App() {
 
     const termResults = await Promise.all(
       proposedTerms.map(async (term, index) => {
-        await new Promise((r) => setTimeout(r, index * 400))
+        await new Promise((r) => setTimeout(r, index * 150))
         try {
           const searchRes = await fetch(
             `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`

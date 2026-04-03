@@ -478,40 +478,6 @@ export default function App() {
     setProposedTerms(proposedTerms.filter((_, idx) => idx !== i))
   }
 
-  async function fetchFullText(paper) {
-    // Try PMC full text first if pmcid exists
-    if (paper.pmcid) {
-      try {
-        const res = await fetch(
-          `${BACKEND}/api/pubmed/efetch.fcgi?db=pmc&id=${paper.pmcid}&retmode=xml&rettype=full`
-        )
-        const xml = await res.text()
-        // Extract all body text sections from PMC XML
-        const sections = []
-        const sectionRegex = /<sec[^>]*>([\s\S]*?)<\/sec>/gi
-        let secMatch
-        while ((secMatch = sectionRegex.exec(xml)) !== null) {
-          // Strip XML tags from section content
-          const text = secMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-          if (text.length > 100) sections.push(text)
-        }
-        if (sections.length > 0) {
-          const fullText = sections.join('\n\n').slice(0, 1500)
-          return { ...paper, fullText, textSource: 'full' }
-        }
-        // Fallback: extract abstract from PMC XML
-        const abstractMatch = xml.match(/<abstract[^>]*>([\s\S]*?)<\/abstract>/i)
-        if (abstractMatch) {
-          const abstract = abstractMatch[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-          return { ...paper, fullText: abstract, textSource: 'abstract' }
-        }
-      } catch {
-        // fall through to PubMed abstract
-      }
-    }
-    return null
-  }
-
   async function fetchAbstracts(paperList) {
     const result = []
     const batchSize = 10
@@ -521,55 +487,46 @@ export default function App() {
     }
 
     for (const batch of batches) {
-      // First attempt full text for papers with PMC IDs
-      const pmcPapers = batch.filter((p) => p.pmcid)
-      const nonPmcPapers = batch.filter((p) => !p.pmcid)
-      const pmcResults = {}
-
-      if (pmcPapers.length > 0) {
-        await Promise.all(
-          pmcPapers.map(async (paper) => {
-            const r = await fetchFullText(paper)
-            if (r) pmcResults[paper.id] = r
-          })
+      try {
+        const ids = batch.map((p) => p.id).join(',')
+        const res = await fetch(
+          `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${ids}&retmode=xml&rettype=abstract`
         )
-      }
-
-      // Fetch abstracts for non-PMC papers and PMC papers that failed full text
-      const needsAbstract = batch.filter((p) => !pmcResults[p.id])
-      if (needsAbstract.length > 0) {
-        try {
-          const ids = needsAbstract.map((p) => p.id).join(',')
-          const res = await fetch(
-            `${BACKEND}/api/pubmed/efetch.fcgi?db=pubmed&id=${ids}&retmode=xml&rettype=abstract`
+        const xml = await res.text()
+        batch.forEach((paper) => {
+          // Collect all AbstractText nodes for this paper (handles structured abstracts)
+          const paperRegex = new RegExp(
+            `<PubmedArticle>[\\s\\S]*?<PMID[^>]*>${paper.id}</PMID>[\\s\\S]*?(<\/MedlineCitation>)`,
+            'i'
           )
-          const xml = await res.text()
-          needsAbstract.forEach((paper) => {
-            const paperRegex = new RegExp(
-              `<PubmedArticle>[\\s\\S]*?<PMID[^>]*>${paper.id}</PMID>[\\s\\S]*?<AbstractText[^>]*>([\\s\\S]*?)<\\/AbstractText>`,
-              'i'
-            )
-            const match = xml.match(paperRegex)
-            if (match) {
-              result.push({ ...paper, fullText: match[1], textSource: 'abstract' })
-            } else {
-              const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
-              result.push({ ...paper, fullText: simpleMatch ? simpleMatch[1] : 'No text available', textSource: 'abstract' })
+          const articleMatch = xml.match(paperRegex)
+          if (articleMatch) {
+            const articleXml = articleMatch[0]
+            const abstractParts = []
+            const abstractRegex = /<AbstractText[^>]*(?:Label="([^"]*)")?[^>]*>([\s\S]*?)<\/AbstractText>/gi
+            let m
+            while ((m = abstractRegex.exec(articleXml)) !== null) {
+              const label = m[1] ? m[1] + ': ' : ''
+              const text = m[2].replace(/<[^>]+>/g, '').trim()
+              if (text) abstractParts.push(label + text)
             }
-          })
-        } catch {
-          needsAbstract.forEach((paper) => result.push({ ...paper, fullText: 'No text available', textSource: 'abstract' }))
-        }
+            const abstract = abstractParts.join(' ') || 'No abstract available'
+            result.push({ ...paper, abstract, fullText: abstract })
+          } else {
+            // Fallback: grab first abstract in batch xml
+            const simpleMatch = xml.match(/<AbstractText[^>]*>([\s\S]*?)<\/AbstractText>/)
+            const abstract = simpleMatch ? simpleMatch[1].replace(/<[^>]+>/g, '').trim() : 'No abstract available'
+            result.push({ ...paper, abstract, fullText: abstract })
+          }
+        })
+      } catch {
+        batch.forEach((paper) => result.push({ ...paper, abstract: 'No abstract available', fullText: 'No abstract available' }))
       }
-
-      // Add PMC full text results
-      Object.values(pmcResults).forEach((r) => result.push(r))
       await new Promise((r) => setTimeout(r, 150))
     }
 
     // Restore original order
-    const ordered = paperList.map((p) => result.find((r) => r.id === p.id) || { ...p, fullText: 'No text available', textSource: 'abstract' })
-    return ordered
+    return paperList.map((p) => result.find((r) => r.id === p.id) || { ...p, abstract: 'No abstract available', fullText: 'No abstract available' })
   }
 
   async function buildSummary(paperList) {
@@ -588,10 +545,7 @@ export default function App() {
       log(`Synthesizing chunk ${i + 1} of ${chunks.length}...`)
       setLoadingMessage(`Synthesizing papers ${i * chunkSize + 1}–${Math.min((i + 1) * chunkSize, paperList.length)} of ${paperList.length}...`)
       const corpus = chunk
-        .map((p) => {
-          const textLabel = p.textSource === 'full' ? 'Full text (excerpted)' : 'Abstract'
-          return `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\n${textLabel}: ${p.fullText || 'No text available'}`
-        })
+        .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
         .join('\n\n---\n\n')
       const chunkResult = await callClaude(
         `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 600-900 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
@@ -617,9 +571,7 @@ export default function App() {
     }
 
     setSummary(finalSummary)
-    const fullCount = paperList.filter((p) => p.textSource === 'full').length
-    const abstractCount = paperList.filter((p) => p.textSource === 'abstract').length
-    log(`Synthesis complete — ${fullCount} full text, ${abstractCount} abstract-only`)
+    log(`Synthesis complete across ${paperList.length} papers`)
     return finalSummary
   }
 
@@ -694,15 +646,14 @@ export default function App() {
     allPapers.splice(paperCount)
 
     log(`Found ${allPapers.length} unique papers`)
-    setLoadingMessage('Fetching full text and abstracts...')
-    log('Fetching full text where available, abstracts otherwise...')
-    const withText = await fetchAbstracts(allPapers)
-    setPapers(withText)
-    const fullCount = withText.filter((p) => p.textSource === 'full').length
-    log(`Text retrieval complete — ${fullCount}/${withText.length} with full text`)
+    setLoadingMessage('Fetching abstracts...')
+    log('Fetching abstracts...')
+    const withAbstracts = await fetchAbstracts(allPapers)
+    setPapers(withAbstracts)
+    log(`Abstract retrieval complete — ${withAbstracts.length} papers`)
     setLoading(false)
     log('Building corpus synthesis in background...')
-    buildSummary(withText)
+    buildSummary(withAbstracts)
   }
 
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
@@ -1506,8 +1457,8 @@ ${priorForDiagnostic}`, 4000)
               <div key={paper.id} style={{ ...styles.card, marginBottom: '10px' }}>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif', lineHeight: 1.5 }}>{paper.title}</div>
                 <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '4px' }}>{paper.authors}</div>
-                <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px' }}>{paper.year} · {paper.source} · via: {paper.searchTerm} · <span style={{ color: paper.textSource === 'full' ? COLORS.accent : COLORS.muted }}>{paper.textSource === 'full' ? 'full text' : 'abstract only'}</span></div>
-                <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.7, fontStyle: 'italic' }}>{paper.fullText?.slice(0, 300)}...</div>
+                <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px' }}>{paper.year} · {paper.source} · via: {paper.searchTerm}</div>
+                <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.7, fontStyle: 'italic' }}>{paper.abstract?.slice(0, 300)}...</div>
               </div>
             ))}
           </div>

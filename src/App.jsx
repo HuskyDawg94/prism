@@ -698,7 +698,7 @@ export default function App() {
   }
 
   // Shared retry helper — wraps any callClaude + JSON.parse with up to 3 attempts
-  async function callWithRetry(prompt, parseKey, tokens = 4000) {
+  async function callWithRetry(prompt, parseKey, tokens = 5000) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const text = await callClaude(prompt, tokens)
@@ -720,7 +720,7 @@ export default function App() {
       setLoadingMessage(successMsg)
       log(successMsg)
       const syn = await getOrBuildSummary()
-      const result = await callWithRetry(promptFn(syn), parseKey, 4000)
+      const result = await callWithRetry(promptFn(syn), parseKey, 6000)
       setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
       log(`${successMsg} complete`)
       setLoading(false)
@@ -887,15 +887,15 @@ ${priorAnalysis}`
     const [absences, tensions, critiques] = await Promise.all([
       callWithRetry(
         `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`,
-        'absences', 4000
+        'absences', 5000
       ),
       callWithRetry(
         `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'tensions', 4000
+        'tensions', 5000
       ),
       callWithRetry(
         `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'critiques', 4000
+        'critiques', 5000
       ),
     ])
 

@@ -290,6 +290,15 @@ const styles = {
     margin: '0 auto',
     padding: '48px 24px',
   },
+  loadingPulse: {
+    display: 'inline-block',
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    background: COLORS.accent,
+    marginRight: '10px',
+    animation: 'prism-pulse 1.2s ease-in-out infinite',
+  },
   label: {
     fontSize: '11px',
     color: COLORS.muted,
@@ -352,6 +361,14 @@ function PrismLogo() {
   )
 }
 
+// Inject pulse keyframe once
+if (typeof document !== 'undefined' && !document.getElementById('prism-styles')) {
+  const style = document.createElement('style')
+  style.id = 'prism-styles'
+  style.textContent = '@keyframes prism-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.7); } }'
+  document.head.appendChild(style)
+}
+
 const BACKEND = 'https://prism-backend-8ac5.onrender.com'
 
 export default function App() {
@@ -378,8 +395,9 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
   const [error, setError] = useState(null)
-  const [paperCount, setPaperCount] = useState(50)
+  const [paperCount, setPaperCount] = useState(30)
   const [processLog, setProcessLog] = useState([])
+  const [sessionCost, setSessionCost] = useState(0)
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
     const saved = localStorage.getItem('prism_profile')
@@ -454,6 +472,11 @@ export default function App() {
       }),
     })
     const data = await response.json()
+    // Track approximate cost: Sonnet $3/MTok input, $15/MTok output
+    if (data.usage) {
+      const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
+      setSessionCost((prev) => prev + cost)
+    }
     return data.content[0].text
   }
 
@@ -593,6 +616,7 @@ export default function App() {
   async function runSearch() {
     setLoading(true)
     setError(null)
+    setSessionCost(0)
     setStage('results')
     setActivePanel('overview')
     setLoadingMessage('Searching PubMed...')
@@ -1090,6 +1114,20 @@ ${priorForDiagnostic}`
     URL.revokeObjectURL(url)
   }
 
+  function computeCorpusQuality(paperList) {
+    if (!paperList.length) return null
+    const years = paperList.map((p) => parseInt(p.year)).filter(Boolean).sort()
+    const yearMin = years[0]
+    const yearMax = years[years.length - 1]
+    const journals = new Set(paperList.map((p) => p.source).filter(Boolean))
+    const noAbstract = paperList.filter((p) => !p.abstract || p.abstract === 'No abstract available').length
+    const withAbstract = paperList.length - noAbstract
+    const coveragePct = Math.round((withAbstract / paperList.length) * 100)
+    const termCounts = {}
+    paperList.forEach((p) => { if (p.searchTerm) termCounts[p.searchTerm] = (termCounts[p.searchTerm] || 0) + 1 })
+    return { yearMin, yearMax, journalCount: journals.size, noAbstract, coveragePct, termCounts }
+  }
+
   const navItems = [
     { key: 'overview', label: 'Overview', color: COLORS.accent },
     { key: 'fieldDiagnostic', label: 'Field Diagnostic', color: COLORS.accent, count: analysis.fieldDiagnostic ? analysis.fieldDiagnostic.overallScore.toFixed(1) : undefined },
@@ -1097,6 +1135,7 @@ ${priorForDiagnostic}`
     { key: 'tensionTopology', label: 'Tension Topology', color: COLORS.blue, count: analysis.tensionTopology?.length },
     { key: 'methodologicalCritique', label: 'Method Critique', color: COLORS.amber, count: analysis.methodologicalCritique?.length },
     { key: 'hypotheses', label: 'Hypotheses', color: COLORS.purple, count: analysis.hypotheses?.length },
+    { key: 'synthesis', label: 'Synthesis', color: COLORS.muted },
     { key: 'corpus', label: 'Corpus', color: COLORS.muted, count: papers.length },
     { key: 'log', label: 'Process Log', color: COLORS.muted },
   ]
@@ -1192,7 +1231,7 @@ ${priorForDiagnostic}`
               />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: COLORS.muted, marginTop: '4px' }}>
                 <span>20 — fast</span>
-                <span>100 — balanced</span>
+                <span>50 — balanced</span>
                 <span>200 — comprehensive</span>
               </div>
             </div>
@@ -1331,8 +1370,9 @@ ${priorForDiagnostic}`
         )}
 
         {loading && (
-          <div style={{ ...styles.card, borderColor: COLORS.accent }}>
-            <span style={{ color: COLORS.accent }}>loading {loadingMessage}</span>
+          <div style={{ ...styles.card, borderColor: COLORS.accent, display: 'flex', alignItems: 'center' }}>
+            <span style={styles.loadingPulse} />
+            <span style={{ color: COLORS.accent }}>{loadingMessage || 'Loading...'}</span>
           </div>
         )}
 
@@ -1361,6 +1401,31 @@ ${priorForDiagnostic}`
               </div>
             </div>
 
+            {papers.length > 0 && (() => {
+              const cq = computeCorpusQuality(papers)
+              if (!cq) return null
+              return (
+                <div style={{ ...styles.card, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+                  <div>
+                    <div style={styles.statLabel}>Year range</div>
+                    <div style={{ fontSize: '13px', color: COLORS.text }}>{cq.yearMin}–{cq.yearMax}</div>
+                  </div>
+                  <div>
+                    <div style={styles.statLabel}>Journals</div>
+                    <div style={{ fontSize: '13px', color: COLORS.text }}>{cq.journalCount} unique</div>
+                  </div>
+                  <div>
+                    <div style={styles.statLabel}>Abstract coverage</div>
+                    <div style={{ fontSize: '13px', color: cq.coveragePct >= 80 ? COLORS.accent : cq.coveragePct >= 50 ? COLORS.amber : COLORS.red }}>{cq.coveragePct}%</div>
+                  </div>
+                  <div>
+                    <div style={styles.statLabel}>Session cost</div>
+                    <div style={{ fontSize: '13px', color: COLORS.muted }}>${sessionCost.toFixed(3)}</div>
+                  </div>
+                </div>
+              )
+            })()}
+
             {analysis.fieldDiagnostic && (
               <div style={{
                 ...styles.card,
@@ -1388,7 +1453,16 @@ ${priorForDiagnostic}`
             )}
 
             <div style={styles.card}>
-              <div style={styles.sectionTitle}>Topic</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={styles.sectionTitle}>Topic</div>
+                <button
+                  style={{ ...styles.btn('secondary'), fontSize: '10px', padding: '3px 8px' }}
+                  onClick={() => setStage('approve')}
+                  disabled={loading}
+                >
+                  Re-run
+                </button>
+              </div>
               <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px' }}>{query}</p>
               <div style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                 {proposedTerms.map((t, i) => <span key={i} style={styles.tag}>{t}</span>)}
@@ -1404,6 +1478,15 @@ ${priorForDiagnostic}`
               </div>
             )}
           </>
+        )}
+
+        {activePanel === 'fieldDiagnostic' && !analysis.fieldDiagnostic && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Field Diagnostic</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Field Diagnostic from the sidebar to get a scored epistemic health assessment across six dimensions. Run this last — it uses all prior module outputs for the most accurate score.
+            </p>
+          </div>
         )}
 
         {activePanel === 'fieldDiagnostic' && analysis.fieldDiagnostic && (
@@ -1466,6 +1549,15 @@ ${priorForDiagnostic}`
           </div>
         )}
 
+        {activePanel === 'absenceMapping' && !analysis.absenceMapping && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Absence Mapping</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Absence Mapping from the sidebar to identify what this field is conspicuously not studying — underrepresented populations, missing methodologies, and ignored theoretical angles.
+            </p>
+          </div>
+        )}
+
         {activePanel === 'absenceMapping' && analysis.absenceMapping && (
           <div>
             <div style={styles.sectionTitle}>Absence Mapping</div>
@@ -1479,6 +1571,15 @@ ${priorForDiagnostic}`
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {activePanel === 'tensionTopology' && !analysis.tensionTopology && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Tension Topology</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Tension Topology from the sidebar to map where and why researchers disagree — classified as empirical, definitional, methodological, or theoretical conflicts.
+            </p>
           </div>
         )}
 
@@ -1498,6 +1599,15 @@ ${priorForDiagnostic}`
           </div>
         )}
 
+        {activePanel === 'methodologicalCritique' && !analysis.methodologicalCritique && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Methodological Critique</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Methodological Critique from the sidebar to surface systematic problems in how this field does science — underpowered studies, replication failures, and confounded variables.
+            </p>
+          </div>
+        )}
+
         {activePanel === 'methodologicalCritique' && analysis.methodologicalCritique && (
           <div>
             <div style={styles.sectionTitle}>Methodological Critique</div>
@@ -1511,6 +1621,15 @@ ${priorForDiagnostic}`
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginTop: '4px' }}><span style={{ color: COLORS.text }}>Remedy: </span>{item.remedy}</div>
               </div>
             ))}
+          </div>
+        )}
+
+        {activePanel === 'hypotheses' && !analysis.hypotheses && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Hypothesis Nudges</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Hypothesis Nudges from the sidebar to get directional research suggestions calibrated to your methods and career stage. Run Absence Mapping and Tension Topology first for richer results.
+            </p>
           </div>
         )}
 
@@ -1537,10 +1656,50 @@ ${priorForDiagnostic}`
           </div>
         )}
 
+        {activePanel === 'synthesis' && (
+          <div>
+            <div style={styles.sectionTitle}>Corpus Synthesis</div>
+            <div style={styles.sectionSub}>The master synthesis Claude uses as the basis for all analysis modules</div>
+            {!summary && (
+              <div style={styles.card}>
+                <p style={{ color: COLORS.muted, fontSize: '12px', lineHeight: 1.8 }}>
+                  Synthesis builds automatically after search completes. Run a search first.
+                </p>
+              </div>
+            )}
+            {summary && (
+              <div style={{ ...styles.card, lineHeight: 1.9 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '12px' }}>
+                  <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                    {summary.split(/\s+/).length.toLocaleString()} words · {papers.length} papers
+                  </div>
+                </div>
+                <div style={{ fontSize: '12px', color: COLORS.text, whiteSpace: 'pre-wrap' }}>{summary}</div>
+              </div>
+            )}
+          </div>
+        )}
+
         {activePanel === 'corpus' && (
           <div>
             <div style={styles.sectionTitle}>Corpus — {papers.length} papers</div>
             <div style={styles.sectionSub}>All papers retrieved across {proposedTerms.length} search queries</div>
+            {(() => {
+              const cq = computeCorpusQuality(papers)
+              if (!cq || !Object.keys(cq.termCounts).length) return null
+              return (
+                <div style={{ ...styles.card, marginBottom: '16px' }}>
+                  <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>Search term performance</div>
+                  {Object.entries(cq.termCounts).sort((a, b) => b[1] - a[1]).map(([term, count]) => (
+                    <div key={term} style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                      <div style={{ flex: 1, fontSize: '11px', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{term}</div>
+                      <div style={{ width: `${Math.max(20, (count / papers.length) * 120)}px`, height: '4px', background: COLORS.accent, borderRadius: '2px', opacity: 0.6, flexShrink: 0 }} />
+                      <div style={{ fontSize: '11px', color: COLORS.text, flexShrink: 0, width: '30px', textAlign: 'right' }}>{count}</div>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
             {papers.map((paper) => (
               <div key={paper.id} style={{ ...styles.card, marginBottom: '10px' }}>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif', lineHeight: 1.5 }}>{paper.title}</div>

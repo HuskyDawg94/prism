@@ -398,6 +398,8 @@ export default function App() {
   const [paperCount, setPaperCount] = useState(30)
   const [processLog, setProcessLog] = useState([])
   const [sessionCost, setSessionCost] = useState(0)
+  const [selectedDatabases, setSelectedDatabases] = useState({ pubmed: true, openalex: false, semanticscholar: false, europepmc: false })
+  const [dbWeights, setDbWeights] = useState({ pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
     const saved = localStorage.getItem('prism_profile')
@@ -523,13 +525,35 @@ export default function App() {
     setStage('approve')
     setProposedTerms(['Generating search terms...'])
     log('Generating search terms via Claude...')
+    const dbList = Object.entries(selectedDatabases).filter(([,v]) => v).map(([k]) => k).join(', ')
     const text = await callClaude(
-      `You are helping a neuroscience researcher search PubMed. Generate 6 specific, high-quality PubMed search terms for the following research topic: "${query}". Rules: each term should be a distinct angle on the topic, use MeSH terms and field-specific language where appropriate, vary specificity. Return ONLY a JSON array of strings, nothing else.`
+      `You are helping a researcher search academic databases for the topic: "${query}".
+Selected databases: ${dbList}
+
+Generate 6 specific, high-quality search terms that work well across these databases.
+Also estimate how relevant each selected database is for this topic on a scale 1-10.
+
+Rules for terms: each should be a distinct angle, use field-specific language, vary specificity.
+${selectedDatabases.pubmed ? 'For PubMed: use MeSH terms where appropriate.' : ''}
+${selectedDatabases.openalex || selectedDatabases.semanticscholar ? 'For OpenAlex/Semantic Scholar: natural language phrases work well.' : ''}
+
+Return ONLY this JSON, nothing else:
+{
+  "terms": ["term1", "term2", "term3", "term4", "term5", "term6"],
+  "dbWeights": {
+    "pubmed": 8,
+    "openalex": 6,
+    "semanticscholar": 5,
+    "europepmc": 4
+  }
+}`
     )
     const cleaned = text.replace(/```json|```/g, '').trim()
-    const terms = JSON.parse(cleaned)
+    const parsed = JSON.parse(cleaned)
+    const terms = parsed.terms || parsed
     setProposedTerms(terms)
-    log(`Generated ${terms.length} search terms`)
+    setDbWeights(parsed.dbWeights || { pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
+    log(`Generated ${terms.length} search terms for: ${dbList}`)
   }
 
   function updateTerm(i, v) {
@@ -540,6 +564,86 @@ export default function App() {
 
   function removeTerm(i) {
     setProposedTerms(proposedTerms.filter((_, idx) => idx !== i))
+  }
+
+  // ── OpenAlex fetcher ─────────────────────────────────────────────────────
+  async function fetchOpenAlex(term, count) {
+    try {
+      const url = `https://api.openalex.org/works?search=${encodeURIComponent(term)}&per-page=${Math.min(count, 50)}&filter=has_abstract:true&select=id,title,authorships,publication_year,primary_location,abstract_inverted_index`
+      const res = await fetch(url, { headers: { 'User-Agent': 'PRISM/1.0 (mailto:u1469338@utah.edu)' } })
+      const data = await res.json()
+      return (data.results || []).map((w) => {
+        // Reconstruct abstract from inverted index
+        let abstract = 'No abstract available'
+        if (w.abstract_inverted_index) {
+          const words = {}
+          for (const [word, positions] of Object.entries(w.abstract_inverted_index)) {
+            for (const pos of positions) words[pos] = word
+          }
+          abstract = Object.keys(words).sort((a,b) => a-b).map(k => words[k]).join(' ')
+        }
+        return {
+          id: `oa_${w.id?.replace('https://openalex.org/', '')}`,
+          title: w.title || 'Untitled',
+          authors: w.authorships?.slice(0,3).map(a => a.author?.display_name).filter(Boolean).join(', '),
+          year: String(w.publication_year || ''),
+          source: w.primary_location?.source?.display_name || 'Unknown',
+          searchTerm: term,
+          database: 'OpenAlex',
+          abstract,
+          fullText: abstract,
+        }
+      })
+    } catch (e) {
+      log(`OpenAlex fetch failed for "${term}": ${e.message}`)
+      return []
+    }
+  }
+
+  // ── Semantic Scholar fetcher ──────────────────────────────────────────────
+  async function fetchSemanticScholar(term, count) {
+    try {
+      const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(term)}&limit=${Math.min(count, 50)}&fields=paperId,title,authors,year,venue,abstract`
+      const res = await fetch(url)
+      const data = await res.json()
+      return (data.data || []).filter(p => p.abstract).map((p) => ({
+        id: `ss_${p.paperId}`,
+        title: p.title || 'Untitled',
+        authors: p.authors?.slice(0,3).map(a => a.name).join(', '),
+        year: String(p.year || ''),
+        source: p.venue || 'Unknown',
+        searchTerm: term,
+        database: 'Semantic Scholar',
+        abstract: p.abstract || 'No abstract available',
+        fullText: p.abstract || 'No abstract available',
+      }))
+    } catch (e) {
+      log(`Semantic Scholar fetch failed for "${term}": ${e.message}`)
+      return []
+    }
+  }
+
+  // ── Europe PMC fetcher ────────────────────────────────────────────────────
+  async function fetchEuropePMC(term, count) {
+    try {
+      const url = `https://www.ebi.ac.uk/europepmc/webservices/rest/search?query=${encodeURIComponent(term)}&pageSize=${Math.min(count, 50)}&format=json&resultType=core`
+      const res = await fetch(url)
+      const data = await res.json()
+      return (data.resultList?.result || []).map((p) => ({
+        id: `epmc_${p.id}`,
+        title: p.title || 'Untitled',
+        authors: p.authorString?.split(',').slice(0,3).join(',') || '',
+        year: String(p.pubYear || ''),
+        source: p.journalTitle || 'Unknown',
+        searchTerm: term,
+        database: 'Europe PMC',
+        abstract: p.abstractText || 'No abstract available',
+        fullText: p.abstractText || 'No abstract available',
+      }))
+    } catch (e) {
+      log(`Europe PMC fetch failed for "${term}": ${e.message}`)
+      return []
+    }
   }
 
   async function fetchAbstracts(paperList) {
@@ -676,13 +780,45 @@ export default function App() {
     return result
   }
 
+  async function fetchPubMedPapers(term, count) {
+    try {
+      const searchRes = await fetch(
+        `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${count}&retmode=json`
+      )
+      const searchData = await searchRes.json()
+      const ids = searchData.esearchresult.idlist
+      if (!ids.length) return []
+      await new Promise((r) => setTimeout(r, 300))
+      const detailRes = await fetch(
+        `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
+      )
+      const detailData = await detailRes.json()
+      if (!detailData.result) return []
+      return ids
+        .filter((id) => detailData.result[id]?.title)
+        .map((id) => {
+          const paper = detailData.result[id]
+          const pmcEntry = paper.articleids?.find((a) => a.idtype === 'pmc')
+          return {
+            id: `pm_${id}`,
+            title: paper.title,
+            authors: paper.authors?.map((a) => a.name).join(', '),
+            year: paper.pubdate?.split(' ')[0],
+            source: paper.source,
+            searchTerm: term,
+            database: 'PubMed',
+            pmcid: pmcEntry ? pmcEntry.value.replace('PMC', '') : null,
+          }
+        })
+    } catch { return [] }
+  }
+
   async function runSearch() {
     setLoading(true)
     setError(null)
     setSessionCost(0)
     setStage('results')
     setActivePanel('overview')
-    setLoadingMessage('Searching PubMed...')
     setSummary('')
     setAnalysis({})
     setProcessLog([])
@@ -690,65 +826,73 @@ export default function App() {
     localStorage.removeItem('prism_papers')
     localStorage.removeItem('prism_analysis')
     localStorage.removeItem('prism_summary')
-    log(`Searching PubMed across ${proposedTerms.length} terms...`)
 
-    const perTerm = Math.ceil(paperCount / proposedTerms.length * 1.5)
+    const activeDbs = Object.entries(selectedDatabases).filter(([,v]) => v).map(([k]) => k)
+    const dbCount = activeDbs.length
+    log(`Searching ${activeDbs.join(', ')} across ${proposedTerms.length} terms...`)
 
-    const termResults = await Promise.all(
-      proposedTerms.map(async (term, index) => {
-        await new Promise((r) => setTimeout(r, index * 150))
-        try {
-          const searchRes = await fetch(
-            `${BACKEND}/api/pubmed/esearch.fcgi?db=pubmed&term=${encodeURIComponent(term)}&retmax=${perTerm}&retmode=json`
-          )
-          const searchData = await searchRes.json()
-          const ids = searchData.esearchresult.idlist
-          if (!ids.length) return []
-          await new Promise((r) => setTimeout(r, 300))
-          const detailRes = await fetch(
-            `${BACKEND}/api/pubmed/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
-          )
-          const detailData = await detailRes.json()
-          if (!detailData.result) return []
-          return ids
-            .filter((id) => detailData.result[id]?.title)
-            .map((id) => {
-              const paper = detailData.result[id]
-              const pmcEntry = paper.articleids?.find((a) => a.idtype === 'pmc')
-              return {
-                id,
-                title: paper.title,
-                authors: paper.authors?.map((a) => a.name).join(', '),
-                year: paper.pubdate?.split(' ')[0],
-                source: paper.source,
-                searchTerm: term,
-                pmcid: pmcEntry ? pmcEntry.value.replace('PMC', '') : null,
-              }
-            })
-        } catch {
-          return []
-        }
-      })
-    )
+    // Calculate per-term count per db using weights — higher weight = more results
+    function perTermCount(dbKey) {
+      const weight = dbWeights[dbKey] || 5
+      const base = Math.ceil((paperCount / proposedTerms.length) * 1.5)
+      return Math.ceil(base * (weight / 8))
+    }
 
+    const allFetches = []
+    for (const [i, term] of proposedTerms.entries()) {
+      await new Promise(r => setTimeout(r, i * 150))
+      const dbFetches = []
+      if (selectedDatabases.pubmed) {
+        setLoadingMessage(`Searching PubMed: "${term}"...`)
+        dbFetches.push(fetchPubMedPapers(term, perTermCount('pubmed')))
+      }
+      if (selectedDatabases.openalex) {
+        setLoadingMessage(`Searching OpenAlex: "${term}"...`)
+        dbFetches.push(fetchOpenAlex(term, perTermCount('openalex')))
+      }
+      if (selectedDatabases.semanticscholar) {
+        setLoadingMessage(`Searching Semantic Scholar: "${term}"...`)
+        dbFetches.push(fetchSemanticScholar(term, perTermCount('semanticscholar')))
+      }
+      if (selectedDatabases.europepmc) {
+        setLoadingMessage(`Searching Europe PMC: "${term}"...`)
+        dbFetches.push(fetchEuropePMC(term, perTermCount('europepmc')))
+      }
+      const termResults = await Promise.all(dbFetches)
+      allFetches.push(...termResults.flat())
+    }
+
+    // Deduplicate by normalized title (cross-database dedup)
     const seen = new Set()
     const allPapers = []
-    for (const batch of termResults) {
-      for (const paper of batch) {
-        if (!seen.has(paper.id)) {
-          seen.add(paper.id)
-          allPapers.push(paper)
-        }
+    for (const paper of allFetches) {
+      const key = paper.title?.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60)
+      if (key && !seen.has(key)) {
+        seen.add(key)
+        allPapers.push(paper)
       }
     }
     allPapers.splice(paperCount)
 
-    log(`Found ${allPapers.length} unique papers`)
-    setLoadingMessage('Fetching abstracts...')
-    log('Fetching abstracts...')
-    const withAbstracts = await fetchAbstracts(allPapers)
+    log(`Found ${allPapers.length} unique papers across ${activeDbs.join(', ')}`)
+
+    // Only PubMed papers need separate abstract fetching — others have abstracts inline
+    const pubmedPapers = allPapers.filter(p => p.database === 'PubMed')
+    const otherPapers = allPapers.filter(p => p.database !== 'PubMed')
+
+    let withAbstracts = [...otherPapers]
+    if (pubmedPapers.length) {
+      setLoadingMessage('Fetching PubMed abstracts...')
+      log('Fetching PubMed abstracts...')
+      // Strip the pm_ prefix for the PubMed API call
+      const pubmedNative = pubmedPapers.map(p => ({ ...p, id: p.id.replace('pm_', '') }))
+      const fetched = await fetchAbstracts(pubmedNative)
+      // Restore pm_ prefix
+      withAbstracts = [...withAbstracts, ...fetched.map(p => ({ ...p, id: `pm_${p.id}`, database: 'PubMed' }))]
+    }
+
     setPapers(withAbstracts)
-    log(`Abstract retrieval complete — ${withAbstracts.length} papers`)
+    log(`Corpus ready — ${withAbstracts.length} papers from ${activeDbs.join(', ')}`)
     setLoading(false)
     log('Building corpus synthesis in background...')
     summaryBuildRef.current = buildSummary(withAbstracts)
@@ -1296,9 +1440,49 @@ ${priorForDiagnostic}`
                 <span>200 — comprehensive</span>
               </div>
             </div>
+            <div style={{ marginTop: '20px' }}>
+              <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                Data Sources
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                {[
+                  { key: 'pubmed', label: 'PubMed', desc: 'Biomedical & life sciences', color: COLORS.accent },
+                  { key: 'openalex', label: 'OpenAlex', desc: 'All disciplines, 250M+ works', color: COLORS.blue },
+                  { key: 'semanticscholar', label: 'Semantic Scholar', desc: 'CS, biomedicine, broad', color: COLORS.purple },
+                  { key: 'europepmc', label: 'Europe PMC', desc: 'Life sciences + preprints', color: COLORS.amber },
+                ].map(({ key, label, desc, color }) => (
+                  <div
+                    key={key}
+                    onClick={() => setSelectedDatabases(prev => ({ ...prev, [key]: !prev[key] }))}
+                    style={{
+                      padding: '10px 12px',
+                      borderRadius: '6px',
+                      border: `1px solid ${selectedDatabases[key] ? color : COLORS.border}`,
+                      background: selectedDatabases[key] ? `${color}15` : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px' }}>
+                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: selectedDatabases[key] ? color : COLORS.muted, flexShrink: 0 }} />
+                      <span style={{ fontSize: '12px', color: selectedDatabases[key] ? color : COLORS.text }}>{label}</span>
+                    </div>
+                    <div style={{ fontSize: '10px', color: COLORS.muted, paddingLeft: '16px' }}>{desc}</div>
+                  </div>
+                ))}
+              </div>
+              {!Object.values(selectedDatabases).some(Boolean) && (
+                <div style={{ fontSize: '11px', color: COLORS.red, marginTop: '6px' }}>Select at least one data source</div>
+              )}
+            </div>
+
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
               <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>Profile</button>
-              <button style={{ ...styles.btn('primary'), flex: 1 }} onClick={generateTerms} disabled={!query}>
+              <button
+                style={{ ...styles.btn('primary'), flex: 1 }}
+                onClick={generateTerms}
+                disabled={!query || !Object.values(selectedDatabases).some(Boolean)}
+              >
                 Generate Search Terms
               </button>
             </div>
@@ -1744,7 +1928,24 @@ ${priorForDiagnostic}`
         {activePanel === 'corpus' && (
           <div>
             <div style={styles.sectionTitle}>Corpus — {papers.length} papers</div>
-            <div style={styles.sectionSub}>All papers retrieved across {proposedTerms.length} search queries</div>
+            <div style={styles.sectionSub}>
+              {proposedTerms.length} search queries ·{' '}
+              {[...new Set(papers.map(p => p.database).filter(Boolean))].join(', ') || 'PubMed'}
+            </div>
+            {(() => {
+              const dbCounts = {}
+              papers.forEach(p => { const db = p.database || 'PubMed'; dbCounts[db] = (dbCounts[db] || 0) + 1 })
+              return Object.keys(dbCounts).length > 1 ? (
+                <div style={{ ...styles.card, display: 'flex', gap: '16px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                  {Object.entries(dbCounts).map(([db, count]) => (
+                    <div key={db}>
+                      <div style={{ fontSize: '10px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{db}</div>
+                      <div style={{ fontSize: '16px', color: COLORS.text }}>{count}</div>
+                    </div>
+                  ))}
+                </div>
+              ) : null
+            })()}
             {(() => {
               const cq = computeCorpusQuality(papers)
               if (!cq || !Object.keys(cq.termCounts).length) return null

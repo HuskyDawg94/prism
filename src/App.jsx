@@ -1029,7 +1029,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'What this field is not studying and why it matters', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.absenceMapping.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.significance.toUpperCase()}] ${item.category}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.significance || "unknown").toUpperCase()}] ${item.category || ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun('')] }))
       })
@@ -1040,7 +1040,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.tensionTopology.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.type.toUpperCase()}] ${item.title}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.type || "unknown").toUpperCase()}] ${item.title || ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Root cause: ', bold: true }), new TextRun(item.rootCause)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Resolution: ', bold: true }), new TextRun(item.resolution)] }))
@@ -1053,7 +1053,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.methodologicalCritique.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${item.severity.toUpperCase()}] ${item.issue}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.severity || "unknown").toUpperCase()}] ${item.issue || ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Affected: ', bold: true }), new TextRun(item.affected)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Remedy: ', bold: true }), new TextRun(item.remedy)] }))

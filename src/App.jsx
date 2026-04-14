@@ -472,12 +472,51 @@ export default function App() {
       }),
     })
     const data = await response.json()
-    // Track approximate cost: Sonnet $3/MTok input, $15/MTok output
+    // Sonnet: $3/MTok input, $15/MTok output
     if (data.usage) {
       const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
       setSessionCost((prev) => prev + cost)
     }
     return data.content[0].text
+  }
+
+  // Haiku — cheap, fast, used only for chunk synthesis
+  async function callHaiku(prompt, maxTokens = 2000) {
+    const response = await fetch(`${BACKEND}/api/claude/haiku`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    const data = await response.json()
+    // Haiku: $0.25/MTok input, $1.25/MTok output
+    if (data.usage) {
+      const cost = (data.usage.input_tokens / 1_000_000) * 0.25 + (data.usage.output_tokens / 1_000_000) * 1.25
+      setSessionCost((prev) => prev + cost)
+    }
+    return data.content[0].text
+  }
+
+  // Cached Sonnet — sends synthesis in a cached block, saves ~85% on repeated input tokens
+  async function callClaudeCached(synthesis, prompt, maxTokens = 6000) {
+    const response = await fetch(`${BACKEND}/api/claude/cached`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ synthesis, prompt, max_tokens: maxTokens }),
+    })
+    const data = await response.json()
+    // Cached input: $0.30/MTok (90% discount), write: $3.75/MTok, output: $15/MTok
+    if (data.usage) {
+      const inputCost = ((data.usage.cache_read_input_tokens || 0) / 1_000_000) * 0.30
+        + ((data.usage.cache_creation_input_tokens || 0) / 1_000_000) * 3.75
+        + ((data.usage.input_tokens || 0) / 1_000_000) * 3
+      const outputCost = (data.usage.output_tokens / 1_000_000) * 15
+      setSessionCost((prev) => prev + inputCost + outputCost)
+    }
+    const text = data.content?.[0]?.text || ''
+    return text
   }
 
   async function generateTerms() {
@@ -554,48 +593,72 @@ export default function App() {
     return paperList.map((p) => result.find((r) => r.id === p.id) || { ...p, abstract: 'No abstract available', fullText: 'No abstract available' })
   }
 
+  async function filterRelevantPapers(paperList) {
+    if (paperList.length < 10) return paperList
+    setLoadingMessage('Filtering corpus for relevance...')
+    log('Filtering corpus relevance...')
+    const abstracts = paperList.map((p, i) =>
+      `[${i}] ${p.title}: ${(p.abstract || '').slice(0, 200)}`
+    ).join('\n')
+    try {
+      const text = await callHaiku(
+        `Score each paper 1-10 for relevance to "${query}". Return ONLY a JSON array of numbers matching the paper order, e.g. [8,3,9,2]. No explanation.\n\nPAPERS:\n${abstracts}`,
+        800
+      )
+      const scores = JSON.parse(text.replace(/```json|```/g, '').trim())
+      const filtered = paperList.filter((_, i) => (scores[i] || 5) >= 4)
+      const dropped = paperList.length - filtered.length
+      if (dropped > 0) log(`Relevance filter removed ${dropped} off-topic papers`)
+      return filtered.length >= 10 ? filtered : paperList
+    } catch {
+      log('Relevance filter skipped')
+      return paperList
+    }
+  }
+
   async function buildSummary(paperList) {
-    // Tier 2: 450k input TPM — can run chunks in parallel safely
-    // Chunk size 20: ~20 abstracts * ~400 tokens each = ~8k tokens/chunk, well under limits
+    const filteredPapers = await filterRelevantPapers(paperList)
     const chunkSize = 20
     const chunks = []
-    for (let i = 0; i < paperList.length; i += chunkSize) {
-      chunks.push(paperList.slice(i, i + chunkSize))
+    for (let i = 0; i < filteredPapers.length; i += chunkSize) {
+      chunks.push(filteredPapers.slice(i, i + chunkSize))
     }
 
-    log(`Building synthesis across ${chunks.length} chunk(s) in parallel...`)
-    setLoadingMessage(`Synthesizing ${paperList.length} papers across ${chunks.length} chunks...`)
+    log(`Building synthesis across ${chunks.length} chunk(s) using Haiku...`)
+    setLoadingMessage(`Synthesizing ${filteredPapers.length} papers across ${chunks.length} chunks...`)
 
-    // Parallel chunk synthesis — safe at Tier 2
     const chunkSummaries = await Promise.all(
       chunks.map((chunk, i) => {
         const corpus = chunk
-          .map((p) => `Title: ${p.title}\nAuthors: ${p.authors || 'Unknown'}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
+          .map((p) => `Title: ${p.title}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
           .join('\n\n---\n\n')
-        return callClaude(
-          `You are synthesizing part ${i + 1} of ${chunks.length} of a research corpus on "${query}". Summarize the key findings, claims, methods, and debates across these ${chunk.length} papers in 300-500 words. Be specific — note sample sizes, effect sizes, populations, and methodological details where present. Return plain text only.\n\nPAPERS:\n${corpus}`,
-          4000
+        return callHaiku(
+          `Synthesize this batch of ${chunk.length} research papers on "${query}". Cover key findings, methods, populations, effect sizes, and debates in 250-400 words. Dense and specific. Plain text only.\n\nPAPERS:\n${corpus}`,
+          1500
         )
       })
     )
 
     let finalSummary
     if (chunks.length === 1) {
-      finalSummary = chunkSummaries[0]
-    } else {
-      log('Merging chunk syntheses into master synthesis...')
-      setLoadingMessage('Merging into master synthesis...')
-      const mergeInput = chunkSummaries
-        .map((s, i) => `CHUNK ${i + 1}:\n${s}`)
-        .join('\n\n===\n\n')
+      log('Single chunk — running Sonnet master synthesis...')
+      setLoadingMessage('Building master synthesis...')
       finalSummary = await callClaude(
-        `You are synthesizing ${chunks.length} partial literature summaries covering ${paperList.length} total papers on "${query}" into a single master synthesis. Integrate all chunks into a unified 2000-3000 word synthesis covering: (1) major empirical findings and where they agree or conflict, (2) dominant methodological approaches and limitations, (3) theoretical frameworks and debates, (4) population and contextual gaps, (5) the most contested or unresolved questions. Be specific and analytical. Return plain text only.\n\n${mergeInput}`,
-        4000
+        `Produce a master literature synthesis on "${query}" from ${filteredPapers.length} papers. Write a structured 1500-2500 word synthesis covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\nCHUNK SUMMARY:\n${chunkSummaries[0]}`,
+        3000
+      )
+    } else {
+      log('Merging chunk syntheses into master synthesis via Sonnet...')
+      setLoadingMessage('Merging into master synthesis...')
+      const mergeInput = chunkSummaries.map((s, i) => `CHUNK ${i + 1}:\n${s}`).join('\n\n===\n\n')
+      finalSummary = await callClaude(
+        `Synthesize ${chunks.length} partial literature summaries covering ${filteredPapers.length} papers on "${query}" into a structured master synthesis of 1500-2500 words covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\n${mergeInput}`,
+        3000
       )
     }
 
     setSummary(finalSummary)
-    log(`Synthesis complete across ${paperList.length} papers`)
+    log(`Synthesis complete (${filteredPapers.length} papers)`)
     return finalSummary
   }
 
@@ -698,10 +761,13 @@ export default function App() {
   }
 
   // Shared retry helper — wraps any callClaude + JSON.parse with up to 3 attempts
-  async function callWithRetry(prompt, parseKey, tokens = 4000) {
+  async function callWithRetry(prompt, parseKey, tokens = 6000, synthesis = null) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const text = await callClaude(prompt, tokens)
+        // Use cached endpoint if synthesis provided — saves ~85% on repeated input tokens
+        const text = synthesis
+          ? await callClaudeCached(synthesis, prompt, tokens)
+          : await callClaude(prompt, tokens)
         const cleaned = text.replace(/```json|```/g, '').trim()
         const parsed = JSON.parse(cleaned)
         return parseKey ? parsed[parseKey] : parsed
@@ -720,7 +786,8 @@ export default function App() {
       setLoadingMessage(successMsg)
       log(successMsg)
       const syn = await getOrBuildSummary()
-      const result = await callWithRetry(promptFn(syn), parseKey, 6000)
+      // Pass synthesis separately so cached endpoint can cache it
+      const result = await callWithRetry(promptFn(), parseKey, 6000, syn)
       setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
       log(`${successMsg} complete`)
       setLoading(false)
@@ -735,7 +802,7 @@ export default function App() {
   async function runAbsenceMapping() {
     await runModule(
       'absenceMapping',
-      (syn) => `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}`,
       'absences',
       'Running absence mapping...'
     )
@@ -744,7 +811,7 @@ export default function App() {
   async function runTensionTopology() {
     await runModule(
       'tensionTopology',
-      (syn) => `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`,
+      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}`,
       'tensions',
       'Mapping tensions...'
     )
@@ -753,7 +820,7 @@ export default function App() {
   async function runMethodologicalCritique() {
     await runModule(
       'methodologicalCritique',
-      (syn) => `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}`,
       'critiques',
       'Running methodological critique...'
     )
@@ -774,8 +841,8 @@ export default function App() {
       log('Generating hypotheses...')
       const syn = await getOrBuildSummary()
       const hypotheses = await callWithRetry(
-        `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
-        'hypotheses', 6000
+        `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
+        'hypotheses', 6000, syn
       )
       setAnalysis((prev) => ({ ...prev, hypotheses }))
       log('Generating hypotheses... complete')
@@ -852,13 +919,10 @@ Return ONLY this JSON, no markdown:
   "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
 }
 
-LITERATURE SYNTHESIS:
-${syn}
-
 PRIOR ANALYSIS:
 ${priorAnalysis}`
 
-    const result = await callWithRetry(diagnosticPrompt, null, 6000)
+    const result = await callWithRetry(diagnosticPrompt, null, 6000, syn)
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: result }))
     log('Field diagnostic complete')
     setLoading(false)
@@ -886,16 +950,16 @@ ${priorAnalysis}`
     log('Run All: running parallel modules...')
     const [absences, tensions, critiques] = await Promise.all([
       callWithRetry(
-        `You are a rigorous neuroscience research analyst. Based on this synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied. Look for underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, and cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}\n\nSYNTHESIS:\n${syn}`,
-        'absences', 6000
+        `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}`,
+        'absences', 6000, syn
       ),
       callWithRetry(
-        `You are a rigorous neuroscience research analyst. Based on this synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'tensions', 6000
+        `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}`,
+        'tensions', 6000, syn
       ),
       callWithRetry(
-        `You are a rigorous methodologist reviewing the literature on "${query}". Based on this synthesis of ${papers.length} papers, identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}\n\nSYNTHESIS:\n${syn}`,
-        'critiques', 6000
+        `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}`,
+        'critiques', 6000, syn
       ),
     ])
 
@@ -918,8 +982,8 @@ ${priorAnalysis}`
     ].join('\n\n')
 
     const hypotheses = await callWithRetry(
-      `You are a creative but rigorous neuroscience research analyst. Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nSYNTHESIS:\n${syn}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`,
-      'hypotheses', 6000
+      `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`,
+      'hypotheses', 6000, syn
     )
     setAnalysis((prev) => ({ ...prev, hypotheses }))
     log('Run All: hypotheses complete')
@@ -983,13 +1047,10 @@ Return ONLY this JSON, no markdown:
   "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
 }
 
-LITERATURE SYNTHESIS:
-${syn}
-
 PRIOR ANALYSIS:
 ${priorForDiagnostic}`
 
-    const diagnosticResult = await callWithRetry(diagnosticPromptAll, null, 6000)
+    const diagnosticResult = await callWithRetry(diagnosticPromptAll, null, 6000, syn)
     setAnalysis((prev) => ({ ...prev, fieldDiagnostic: diagnosticResult }))
     log('Run All: complete')
     setLoading(false)

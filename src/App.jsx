@@ -448,7 +448,7 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-4-6',
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       }),
@@ -1293,6 +1293,18 @@ ${priorForDiagnostic}`
           >
             Export Brief
           </button>
+        </div>
+
+        <div style={styles.sidebarLabel}>Feedback</div>
+        <div style={{ padding: '4px 12px' }}>
+          <a
+            href="https://forms.gle/Qe5v4ZgiJPzQJxeW6"
+            target="_blank"
+            rel="noreferrer"
+            style={{ ...styles.btn('secondary'), width: '100%', fontSize: '11px', padding: '6px 10px', display: 'block', textAlign: 'center', textDecoration: 'none', boxSizing: 'border-box' }}
+          >
+            Give Feedback
+          </a>
         </div>
 
         <div style={styles.sidebarLabel}>Session</div>

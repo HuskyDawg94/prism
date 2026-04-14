@@ -51,7 +51,7 @@ const steps = [
   { step: '01', label: 'Enter a topic', desc: 'Type a research area. PRISM generates targeted PubMed search terms for your review.' },
   { step: '02', label: 'Approve queries', desc: 'Edit, remove, or add search terms before they hit PubMed. You control the corpus.' },
   { step: '03', label: 'Build corpus', desc: 'PRISM fetches up to 200 papers with abstracts across all your search terms.' },
-  { step: '04', label: 'Run analysis', desc: 'Run any combination of the four analysis modules. Export a Word brief when done.' },
+  { step: '04', label: 'Run analysis', desc: 'Run any combination of the five analysis modules. Export a Word brief when done.' },
 ]
 
 export default function Landing({ onEnter }) {
@@ -65,6 +65,14 @@ export default function Landing({ onEnter }) {
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '12px', alignItems: 'center' }}>
           <span style={{ fontSize: '11px', color: COLORS.muted }}>v0.1 alpha</span>
+          <a
+            href="https://forms.gle/Qe5v4ZgiJPzQJxeW6"
+            target="_blank"
+            rel="noreferrer"
+            style={{ fontSize: '11px', color: COLORS.muted, textDecoration: 'none' }}
+          >
+            Give Feedback
+          </a>
           <button onClick={onEnter} style={{ padding: '7px 16px', borderRadius: '6px', border: `1px solid ${COLORS.accent}`, background: 'rgba(74,242,161,0.1)', color: COLORS.accent, fontFamily: '"DM Mono", monospace', fontSize: '12px', cursor: 'pointer' }}>
             Launch PRISM
           </button>
@@ -86,7 +94,10 @@ export default function Landing({ onEnter }) {
           Launch PRISM
         </button>
         <p style={{ fontSize: '11px', color: COLORS.muted, marginTop: '12px' }}>
-          Free to use · Powered by PubMed + Claude · Open source
+          Free to use · Powered by PubMed + Claude · Open source ·{' '}
+          <a href="https://forms.gle/Qe5v4ZgiJPzQJxeW6" target="_blank" rel="noreferrer" style={{ color: COLORS.accent, textDecoration: 'none' }}>
+            Share feedback
+          </a>
         </p>
       </div>
 
@@ -127,6 +138,20 @@ export default function Landing({ onEnter }) {
         </div>
       </div>
 
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '40px', maxWidth: '900px', margin: '0 auto', textAlign: 'center' }}>
+        <p style={{ fontSize: '13px', color: COLORS.muted, marginBottom: '12px' }}>
+          Using PRISM? Your feedback shapes what gets built next.
+        </p>
+        <a
+          href="https://forms.gle/Qe5v4ZgiJPzQJxeW6"
+          target="_blank"
+          rel="noreferrer"
+          style={{ display: 'inline-block', padding: '10px 24px', borderRadius: '6px', border: `1px solid ${COLORS.border}`, color: COLORS.accent, textDecoration: 'none', fontSize: '12px', fontFamily: '"DM Mono", monospace' }}
+        >
+          → Give Feedback
+        </a>
+      </div>
+
       <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: '24px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: COLORS.muted }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <PrismLogo size={14} />
@@ -135,6 +160,9 @@ export default function Landing({ onEnter }) {
         <div style={{ display: 'flex', gap: '16px' }}>
           <a href="https://github.com/HuskyDawg94/prism" target="_blank" rel="noreferrer" style={{ color: COLORS.muted, textDecoration: 'none' }}>
             GitHub
+          </a>
+          <a href="https://forms.gle/Qe5v4ZgiJPzQJxeW6" target="_blank" rel="noreferrer" style={{ color: COLORS.muted, textDecoration: 'none' }}>
+            Feedback
           </a>
           <span>Open source · MIT License</span>
         </div>

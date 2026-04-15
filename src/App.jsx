@@ -533,6 +533,28 @@ export default function App() {
     return text
   }
 
+  // Long-running Sonnet — for large prompts like evidence chains that need 5min timeout
+  async function callClaudeLong(prompt, maxTokens = 8000) {
+    const response = await fetch(`${BACKEND}/api/claude/long`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    })
+    const data = await response.json()
+    if (!response.ok || data.error || !data.content?.[0]?.text) {
+      throw new Error(data.error?.message || data.error || `Long API error ${response.status}`)
+    }
+    if (data.usage) {
+      const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
+      setSessionCost((prev) => prev + cost)
+    }
+    return data.content[0].text
+  }
+
   async function generateTerms() {
     setStage('approve')
     setProposedTerms(['Generating search terms...'])
@@ -1184,7 +1206,20 @@ Return ONLY this JSON, no markdown:
   ]
 }`
 
-      const result = await callWithRetry(chainPrompt, 'chains', 8000, syn)
+      // Use long-timeout endpoint for chain building — large prompt needs 5min window
+      let result
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const text = await callClaudeLong(chainPrompt, 8000)
+          const cleaned = text.replace(/```json|```/g, '').trim()
+          result = JSON.parse(cleaned).chains
+          break
+        } catch (e) {
+          if (attempt === 3) throw e
+          log(`Chain build parse failed, retrying (${attempt}/3)...`)
+          await new Promise(r => setTimeout(r, 2000))
+        }
+      }
       setAnalysis((prev) => ({ ...prev, evidenceChains: result }))
       log(`Evidence chain synthesis complete — ${result?.length || 0} chains found`)
       setLoading(false)

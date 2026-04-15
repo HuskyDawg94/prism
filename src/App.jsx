@@ -1019,49 +1019,61 @@ Return ONLY this JSON, nothing else:
 
     const diagnosticPrompt = `You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
 
-Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
+Score each dimension from 1-10 using this calibrated scale:
+- 8-10: Field is genuinely strong on this dimension — well-established methods, broad consensus, or deep evidence base
+- 6-7: Solid but with notable gaps or unresolved issues — functioning well overall
+- 4-5: Mixed — real problems exist but the field is making progress and not fundamentally broken
+- 2-3: Serious structural problems that undermine confidence in this dimension's findings
+- 1: Critically broken — findings in this dimension are largely unreliable or absent
+
+Important calibration rules:
+- Score relative to what is achievable given the field's structural constraints. A rare disease field cannot have large diverse populations — score population coverage relative to what's realistic, not against an impossible ideal.
+- Reserve scores of 1-2 for genuine failures, not inherent limitations.
+- A mature, productive field with normal scientific limitations should score 5-7 on most dimensions.
+- Do not cluster scores around 3-4 by default. Use the full range when warranted.
+- Be honest in both directions — inflate neither praise nor criticism.
 
 Return ONLY this JSON, no markdown:
 {
   "dimensions": [
     {
       "name": "Methodological Integrity",
-      "score": 4,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Theoretical Consensus",
-      "score": 6,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Population Coverage",
-      "score": 3,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Longitudinal Depth",
-      "score": 2,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Replication Robustness",
-      "score": 3,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Cross-disciplinary Integration",
-      "score": 4,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     }
   ],
-  "overallScore": 3.7,
+  "overallScore": <float 1.0-10.0>,
   "overallVerdict": "2-3 sentence plain language summary of the field epistemic health",
   "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
 }
@@ -1213,49 +1225,61 @@ Return ONLY this JSON, no markdown:
 
     const diagnosticPromptAll = `You are a rigorous research epistemologist. Based on the literature synthesis and prior analysis of ${papers.length} papers on "${query}", generate a Field Diagnostic — a structured assessment of the epistemic health of this research field.
 
-Score each dimension from 1-10 where 1 is severely broken and 10 is exemplary. Be honest and critical. Do not inflate scores.
+Score each dimension from 1-10 using this calibrated scale:
+- 8-10: Field is genuinely strong on this dimension — well-established methods, broad consensus, or deep evidence base
+- 6-7: Solid but with notable gaps or unresolved issues — functioning well overall
+- 4-5: Mixed — real problems exist but the field is making progress and not fundamentally broken
+- 2-3: Serious structural problems that undermine confidence in this dimension's findings
+- 1: Critically broken — findings in this dimension are largely unreliable or absent
+
+Important calibration rules:
+- Score relative to what is achievable given the field's structural constraints. A rare disease field cannot have large diverse populations — score population coverage relative to what's realistic, not against an impossible ideal.
+- Reserve scores of 1-2 for genuine failures, not inherent limitations.
+- A mature, productive field with normal scientific limitations should score 5-7 on most dimensions.
+- Do not cluster scores around 3-4 by default. Use the full range when warranted.
+- Be honest in both directions — inflate neither praise nor criticism.
 
 Return ONLY this JSON, no markdown:
 {
   "dimensions": [
     {
       "name": "Methodological Integrity",
-      "score": 4,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Theoretical Consensus",
-      "score": 6,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Population Coverage",
-      "score": 3,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Longitudinal Depth",
-      "score": 2,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Replication Robustness",
-      "score": 3,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     },
     {
       "name": "Cross-disciplinary Integration",
-      "score": 4,
+      "score": <integer 1-10>,
       "verdict": "one sentence assessment",
       "detail": "2-3 sentences explaining the score"
     }
   ],
-  "overallScore": 3.7,
+  "overallScore": <float 1.0-10.0>,
   "overallVerdict": "2-3 sentence plain language summary of the field epistemic health",
   "opportunity": "2-3 sentences on where the real research opportunities are given these gaps"
 }

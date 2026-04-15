@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import '@fontsource/dm-mono'
 import { Analytics } from '@vercel/analytics/react'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
+import Landing from './Landing.jsx'
+import Landing from './Landing.jsx'
 
 const COLORS = {
   bg: '#080c0f',
@@ -375,7 +377,9 @@ export default function App() {
   const [stage, setStage] = useState(() => {
     const savedPapers = localStorage.getItem('prism_papers')
     if (savedPapers && JSON.parse(savedPapers).length > 0) return 'results'
-    return 'onboarding'
+    const visited = localStorage.getItem('prism_visited')
+    if (visited) return 'onboarding'
+    return 'landing'
   })
   const [activePanel, setActivePanel] = useState('overview')
   const [query, setQuery] = useState(() => localStorage.getItem('prism_query') || '')
@@ -429,7 +433,7 @@ export default function App() {
     setAnalysis({})
     setSummary('')
     setProcessLog([])
-    setStage('onboarding')
+    setStage('landing')
   }
 
   function log(msg) {
@@ -1353,6 +1357,22 @@ ${priorForDiagnostic}`
     { label: 'Field Diagnostic', fn: runFieldDiagnostic, done: !!analysis.fieldDiagnostic },
     { label: 'Run All Modules', fn: runAllModules, done: !!analysis.fieldDiagnostic },
   ]
+
+  if (stage === 'landing') {
+    return (
+      <Landing onEnter={() => {
+        localStorage.setItem('prism_visited', '1')
+        setStage('onboarding')
+      }} />
+    )
+  }
+
+  if (stage === 'landing') {
+    return <Landing onEnter={() => {
+      localStorage.setItem('prism_visited', '1')
+      setStage('onboarding')
+    }} />
+  }
 
   if (stage === 'onboarding') {
     return (

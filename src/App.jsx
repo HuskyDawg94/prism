@@ -751,16 +751,16 @@ Return ONLY this JSON, nothing else:
       log('Single chunk — running Sonnet master synthesis...')
       setLoadingMessage('Building master synthesis...')
       finalSummary = await callClaude(
-        `Produce a master literature synthesis on "${query}" from ${filteredPapers.length} papers. Write a structured 1500-2500 word synthesis covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\nCHUNK SUMMARY:\n${chunkSummaries[0]}`,
-        3000
+        `Produce a master literature synthesis on "${query}" from ${filteredPapers.length} papers. Write a structured 2000-3500 word synthesis covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\nCHUNK SUMMARY:\n${chunkSummaries[0]}`,
+        4500
       )
     } else {
       log('Merging chunk syntheses into master synthesis via Sonnet...')
       setLoadingMessage('Merging into master synthesis...')
       const mergeInput = chunkSummaries.map((s, i) => `CHUNK ${i + 1}:\n${s}`).join('\n\n===\n\n')
       finalSummary = await callClaude(
-        `Synthesize ${chunks.length} partial literature summaries covering ${filteredPapers.length} papers on "${query}" into a structured master synthesis of 1500-2500 words covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\n${mergeInput}`,
-        3000
+        `Synthesize ${chunks.length} partial literature summaries covering ${filteredPapers.length} papers on "${query}" into a structured master synthesis of 2000-3500 words covering: (1) major empirical findings and conflicts, (2) dominant methods and limitations, (3) theoretical frameworks and debates, (4) population gaps, (5) unresolved questions. Analytical and specific. Plain text only.\n\n${mergeInput}`,
+        4500
       )
     }
 

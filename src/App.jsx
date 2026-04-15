@@ -1107,72 +1107,84 @@ ${priorAnalysis}`
     setLoading(true)
     setError(null)
     try {
-      setLoadingMessage('Building evidence chains...')
-      log('Running evidence chain synthesis...')
       const syn = await getOrBuildSummary()
-
-      // Build full paper index — title, year, authors, abstract for every paper
-      // This lets Claude reference any paper directly rather than only what survived synthesis compression
-      // Cap at 120 papers, 700 chars each to stay within API limits (~100k tokens max input)
       const paperPool = papers.filter(p => p.abstract && p.abstract !== 'No abstract available')
       const paperSample = paperPool.slice(0, 120)
-      const paperIndex = paperSample
-        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 700)}`)
-        .join('\n\n')
+      log(`Evidence chains: processing ${paperSample.length} papers in two passes`)
 
-      log(`Evidence chains: indexing ${paperSample.length} of ${paperPool.length} papers with abstracts`)
+      // ── Pass 1: Haiku extracts quantitative findings from all abstracts ──────
+      // Break papers into batches of 20 so Haiku can process them fast and cheap
+      setLoadingMessage('Extracting quantitative findings from papers...')
+      const batchSize = 20
+      const batches = []
+      for (let i = 0; i < paperSample.length; i += batchSize) {
+        batches.push(paperSample.slice(i, i + batchSize))
+      }
 
-      const prompt = `You are a rigorous research analyst performing cross-study synthesis across ${papers.length} papers on "${query}".
+      const extractionResults = await Promise.all(batches.map((batch, bi) => {
+        const batchText = batch
+          .map((p, i) => {
+            const idx = bi * batchSize + i + 1
+            return `[${idx}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 600)}`
+          })
+          .join('\n\n')
+        return callHaiku(
+          `Extract all specific quantitative findings from these research papers on "${query}". For each paper, list ONLY findings that contain numbers, measurements, percentages, rates, thresholds, effect sizes, costs, or other quantifiable data. Skip papers with no quantitative data. Format: [paper_number] Author et al. (Year): "exact finding with numbers" — what it measures.\n\nPAPERS:\n${batchText}`,
+          2000
+        )
+      }))
 
-Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
+      const extractedFindings = extractionResults.join('\n\n')
+      log(`Evidence chains: quantitative findings extracted, building chains...`)
 
-A chain can use 2, 3, 4, 5 or more papers — use as many as the evidence genuinely supports. Longer chains that are well-grounded are more valuable than short chains built on weak connections. There is no maximum number of papers per chain.
+      // ── Pass 2: Sonnet builds chains from the compact extracted findings ─────
+      setLoadingMessage('Building evidence chains from extracted findings...')
 
-For each chain:
-1. Extract specific quantitative findings from the individual paper abstracts (measurements, rates, thresholds, costs, effect sizes, correlations, percentages)
-2. Show the logical steps connecting them — each step must reference a specific paper from the index
-3. State the implied finding that emerges — quantify it where possible even if approximate
-4. Flag uncertainty explicitly: if a step is an inference rather than a direct measurement, say so
-5. State the confidence level honestly — more inferential steps = lower confidence unless each step is tightly grounded
+      const chainPrompt = `You are a rigorous research analyst performing cross-study synthesis across ${paperSample.length} papers on "${query}".
 
-Only include chains where every step draws from an actual finding in the provided papers. Do not fabricate citations or extrapolate beyond what the abstracts contain. A chain with fewer well-grounded steps is better than a chain with more speculative ones.
+Below is a structured extraction of quantitative findings from the papers. Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
 
-Use this paper index for citations — reference papers as "Author et al. (Year)" matching the index entries:
+Rules:
+- A chain can connect 2, 3, 4, 5 or more papers — use as many as the evidence supports
+- Every step must reference a specific extracted finding — do not fabricate
+- Quantify the implied finding where possible, even if approximate
+- Flag each step as measured (drawn directly from paper data) or inferred (logical bridge)
+- Be explicit about uncertainty and the key assumption each chain rests on
+- A well-grounded 3-step chain beats a speculative 6-step chain
 
-PAPER INDEX:
-${paperIndex}
+EXTRACTED QUANTITATIVE FINDINGS:
+${extractedFindings}
 
-MASTER SYNTHESIS (for context):
+MASTER SYNTHESIS (for broader context):
 ${syn}
 
 Return ONLY this JSON, no markdown:
 {
   "chains": [
     {
-      "title": "Short descriptive title of the implied finding",
-      "impliedFinding": "The cross-study conclusion in one clear sentence, quantified where possible",
+      "title": "Short descriptive title",
+      "impliedFinding": "The cross-study conclusion, quantified where possible",
       "confidence": "high|medium|low",
-      "inferenceSteps": <number of papers connected>,
-      "paperCount": <number of distinct papers used>,
-      "uncertainty": "Explicit statement of what is inferred vs directly measured and where the chain could break",
-      "assumption": "The key assumption this chain rests on",
+      "inferenceSteps": <integer>,
+      "paperCount": <integer>,
+      "uncertainty": "What is inferred vs measured and where the chain could break",
+      "assumption": "Key assumption this chain rests on",
       "steps": [
         {
           "stepNumber": 1,
-          "finding": "Specific quantitative finding from the paper — include numbers, units, conditions",
+          "finding": "Specific quantitative finding with numbers and units",
           "source": "Author et al. (Year)",
           "measured": true,
-          "logic": "How this finding connects to the next step"
+          "logic": "How this connects to the next step"
         }
       ],
-      "whyNovel": "Why this specific connection has not been made in a single study",
-      "practicalImplication": "What this means for practitioners or researchers in one sentence"
+      "whyNovel": "Why no single study has made this connection",
+      "practicalImplication": "What this means for practitioners in one sentence"
     }
   ]
 }`
 
-      // Evidence chains gets a larger token budget since it processes full abstracts
-      const result = await callWithRetry(prompt, 'chains', 10000)
+      const result = await callWithRetry(chainPrompt, 'chains', 8000, syn)
       setAnalysis((prev) => ({ ...prev, evidenceChains: result }))
       log(`Evidence chain synthesis complete — ${result?.length || 0} chains found`)
       setLoading(false)

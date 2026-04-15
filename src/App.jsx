@@ -705,7 +705,7 @@ Return ONLY this JSON, nothing else:
     setLoadingMessage('Filtering corpus for relevance...')
     log('Filtering corpus relevance...')
     const abstracts = paperList.map((p, i) =>
-      `[${i}] ${p.title}: ${(p.abstract || '').slice(0, 200)}`
+      `[${i}] ${p.title}: ${(p.abstract || '').slice(0, 300)}`
     ).join('\n')
     try {
       const text = await callHaiku(
@@ -713,7 +713,7 @@ Return ONLY this JSON, nothing else:
         800
       )
       const scores = JSON.parse(text.replace(/```json|```/g, '').trim())
-      const filtered = paperList.filter((_, i) => (scores[i] || 5) >= 4)
+      const filtered = paperList.filter((_, i) => (scores[i] || 5) >= 3)
       const dropped = paperList.length - filtered.length
       if (dropped > 0) log(`Relevance filter removed ${dropped} off-topic papers`)
       return filtered.length >= 10 ? filtered : paperList
@@ -725,7 +725,7 @@ Return ONLY this JSON, nothing else:
 
   async function buildSummary(paperList) {
     const filteredPapers = await filterRelevantPapers(paperList)
-    const chunkSize = 20
+    const chunkSize = 25
     const chunks = []
     for (let i = 0; i < filteredPapers.length; i += chunkSize) {
       chunks.push(filteredPapers.slice(i, i + chunkSize))
@@ -740,8 +740,8 @@ Return ONLY this JSON, nothing else:
           .map((p) => `Title: ${p.title}\nYear: ${p.year || 'Unknown'}\nJournal: ${p.source || 'Unknown'}\nAbstract: ${p.abstract || 'No abstract available'}`)
           .join('\n\n---\n\n')
         return callHaiku(
-          `Synthesize this batch of ${chunk.length} research papers on "${query}". Cover key findings, methods, populations, effect sizes, and debates in 250-400 words. Dense and specific. Plain text only.\n\nPAPERS:\n${corpus}`,
-          1500
+          `Synthesize this batch of ${chunk.length} research papers on "${query}". Cover key findings, methods, populations, effect sizes, and debates in 400-600 words. Preserve specific numbers, measurements, and quantitative findings — do not round or omit them. Dense and specific. Plain text only.\n\nPAPERS:\n${corpus}`,
+          2000
         )
       })
     )
@@ -1106,7 +1106,7 @@ ${priorAnalysis}`
       // This lets Claude reference any paper directly rather than only what survived synthesis compression
       const paperIndex = papers
         .filter(p => p.abstract && p.abstract !== 'No abstract available')
-        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 600)}`)
+        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 900)}`)
         .join('\n\n')
 
       log(`Evidence chains: indexing ${papers.filter(p => p.abstract && p.abstract !== 'No abstract available').length} papers with abstracts`)

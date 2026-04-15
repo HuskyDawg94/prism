@@ -47,7 +47,7 @@ export default function Terms() {
           Terms of Service
         </h1>
         <p style={{ color: COLORS.muted, fontSize: '12px', marginBottom: '48px' }}>
-          Last updated: April 2025
+          Last updated: April 2026
         </p>
 
         <Section title="Acceptance">
@@ -99,7 +99,7 @@ export default function Terms() {
         </Section>
 
         <Section title="Institutional and commercial use">
-          PRISM's MIT license permits commercial use. If you are deploying PRISM for institutional or enterprise use and require a custom agreement, data processing addendum, or private deployment arrangement, contact us at u1469338@utah.edu before deployment.
+          PRISM's MIT license permits commercial use. If you are deploying PRISM for institutional or enterprise use and require a custom agreement, data processing addendum, or private deployment arrangement, contact us at chwest05@icloud.com before deployment.
         </Section>
 
         <Section title="Changes to the service">
@@ -111,7 +111,7 @@ export default function Terms() {
         </Section>
 
         <Section title="Contact">
-          Questions about these terms can be directed to u1469338@utah.edu.
+          Questions about these terms can be directed to chwest05@icloud.com.
         </Section>
       </div>
 

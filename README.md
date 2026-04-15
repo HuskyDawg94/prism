@@ -25,6 +25,11 @@ PRISM retrieves a corpus of up to 200 papers from PubMed, synthesizes them, and 
 
 All results export as a formatted Word document (.docx).
 
+---
+
+## Demo
+
+> *"I ran PRISM on white matter aging — it identified three population gaps I hadn't considered, classified the DTI vs. NODDI debate as a methodological tension rooted in modeling assumptions, and flagged underpowered cross-sectional designs as a critical systematic problem. It took 12 minutes."*
 
 ---
 
@@ -53,7 +58,7 @@ Results displayed in structured UI + exported as .docx
 | Layer | Technology |
 |-------|-----------|
 | Frontend | React + Vite, deployed on Vercel |
-| Backend | Express / Node.js, deployed on Render, backend is private to protect API key |
+| Backend | Express / Node.js, deployed on Render |
 | AI | Anthropic API (Claude Sonnet) |
 | Literature | PubMed Entrez Utilities |
 | Export | docx.js |
@@ -144,6 +149,27 @@ PRISM personalizes hypothesis generation to your actual research context. On fir
 
 ---
 
+## Data and privacy
+
+When you use PRISM, your research topic and retrieved paper abstracts are sent to the following external services:
+
+- **Anthropic API** — processes your query and abstracts to generate search terms and all analysis outputs
+- **PubMed, OpenAlex, Semantic Scholar, Europe PMC** — bibliographic databases that return publicly available paper metadata and abstracts
+
+PRISM does not have a backend database. No user data, search queries, or analysis results are stored on PRISM's servers. All session data is stored in your browser's localStorage only.
+
+Your researcher profile (name, institution, methods) is stored locally in your browser and is sent to Anthropic's API only when generating hypothesis nudges. It is not stored anywhere else.
+
+For full details see the [Privacy Policy](https://useprism.net/privacy) and [Terms of Service](https://useprism.net/terms).
+
+## Feedback
+
+PRISM is in active development. If you use it, please take 2 minutes to share your experience — what worked, what didn't, and what you wish it did:
+
+**[→ Give feedback](https://forms.gle/Qe5v4ZgiJPzQJxeW6)**
+
+Feedback directly shapes what gets built next.
+
 ## Contributing
 
 PRISM is open source and contributions are welcome. If you find an output that's wrong, a field it handles poorly, or a feature that would make it more useful for your research, open an issue or submit a PR.
@@ -155,7 +181,7 @@ For significant changes, open an issue first to discuss what you'd like to chang
 ## Built by
 
 Casey Westring — Undergraduate Researcher, U-CLIMB Lab, University of Utah  
-Research focus: cognitive aging, white matter neuroimaging, neuropsychiatric disorders
+Research focus: cognitive aging, white matter neuroimaging  
 [LinkedIn](https://linkedin.com/in/casey-westring-229546261)
 
 Built from inside active neuroimaging research. PRISM exists because the tool I needed didn't.
@@ -171,7 +197,8 @@ MIT — free to use, modify, and distribute.
 ## Support
 
 PRISM is free and open source. Each full analysis run costs approximately $0.70 in AI API fees paid out of pocket.  
+If PRISM saved you time on a literature review, consider [supporting development](https://github.com/sponsors/HuskyDawg94).
 
 ---
 
-*PRISM is developed independently and is not affiliated with the University of Utah or the Anthropic AI for Science Program.*
+*PRISM is developed independently and is not affiliated with the University of Utah or Anthropic

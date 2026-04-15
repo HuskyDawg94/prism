@@ -1,33 +1,18 @@
-import { useState } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { SpeedInsights } from '@vercel/speed-insights/react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import App from './App.jsx'
-import Landing from './Landing.jsx'
+import Privacy from './Privacy.jsx'
+import Terms from './Terms.jsx'
 
-function Root() {
-  const [entered, setEntered] = useState(() => {
-    return !!localStorage.getItem('prism_entered')
-  })
-
-  function handleEnter() {
-    localStorage.setItem('prism_entered', 'true')
-    setEntered(true)
-  }
-
-  if (entered) {
-    return (
-      <>
-        <App />
-        <SpeedInsights />
-      </>
-    )
-  }
-  return (
-    <>
-      <Landing onEnter={handleEnter} />
-      <SpeedInsights />
-    </>
-  )
-}
-
-createRoot(document.getElementById('root')).render(<Root />)
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<App />} />
+        <Route path="/privacy" element={<Privacy />} />
+        <Route path="/terms" element={<Terms />} />
+      </Routes>
+    </BrowserRouter>
+  </StrictMode>
+)

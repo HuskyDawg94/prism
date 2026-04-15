@@ -164,6 +164,12 @@ export default function Landing({ onEnter }) {
           <a href="https://forms.gle/Qe5v4ZgiJPzQJxeW6" target="_blank" rel="noreferrer" style={{ color: COLORS.muted, textDecoration: 'none' }}>
             Feedback
           </a>
+          <a href="/privacy" style={{ color: COLORS.muted, textDecoration: 'none' }}>
+            Privacy
+          </a>
+          <a href="/terms" style={{ color: COLORS.muted, textDecoration: 'none' }}>
+            Terms
+          </a>
           <span>Open source · MIT License</span>
         </div>
       </div>

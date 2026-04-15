@@ -1082,6 +1082,72 @@ ${priorAnalysis}`
     }
   }
 
+  async function runEvidenceChains() {
+    setLoading(true)
+    setError(null)
+    try {
+      setLoadingMessage('Building evidence chains...')
+      log('Running evidence chain synthesis...')
+      const syn = await getOrBuildSummary()
+
+      const prompt = `You are a rigorous research analyst performing cross-study synthesis. Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
+
+For each chain:
+1. Extract specific quantitative findings from different papers (measurements, rates, thresholds, costs, correlations)
+2. Show the logical steps connecting them
+3. State the implied finding that emerges from the chain
+4. Be explicit about assumptions and uncertainty
+5. Cite which papers each step draws from (use author/year format)
+
+Only include chains where each step is grounded in an actual finding from the literature. Do not speculate beyond what the data supports. Label confidence honestly.
+
+Return ONLY this JSON, no markdown:
+{
+  "chains": [
+    {
+      "title": "Short descriptive title of the implied finding",
+      "impliedFinding": "The cross-study conclusion in one clear sentence, with approximate quantification where possible",
+      "confidence": "high|medium|low",
+      "inferenceSteps": 2,
+      "assumption": "The key assumption this chain rests on",
+      "steps": [
+        {
+          "stepNumber": 1,
+          "finding": "Specific quantitative finding from the literature",
+          "source": "Author et al. (Year)",
+          "logic": "How this connects to the next step"
+        },
+        {
+          "stepNumber": 2,
+          "finding": "Specific quantitative finding from the literature",
+          "source": "Author et al. (Year)",
+          "logic": "How this connects to the next step"
+        },
+        {
+          "stepNumber": 3,
+          "finding": "The implied finding that emerges from combining the above",
+          "source": "Cross-study inference",
+          "logic": "Terminal step — this is the novel finding"
+        }
+      ],
+      "whyNovel": "Why this specific connection has not been made in a single study",
+      "practicalImplication": "What this means for practitioners or researchers in one sentence"
+    }
+  ]
+}`
+
+      const result = await callWithRetry(prompt, 'chains', 8000, syn)
+      setAnalysis((prev) => ({ ...prev, evidenceChains: result }))
+      log('Evidence chain synthesis complete')
+      setLoading(false)
+      setActivePanel('evidenceChains')
+    } catch (err) {
+      console.error('runEvidenceChains error:', err)
+      setError('Evidence chain synthesis failed. Please try again.')
+      setLoading(false)
+    }
+  }
+
   async function runAllModules() {
     setLoading(true)
     setError(null)
@@ -1284,6 +1350,30 @@ ${priorForDiagnostic}`
       })
     }
 
+    if (analysis.evidenceChains) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Evidence Chains')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Cross-study synthesis — findings that exist in the literature but have never been connected in a single study', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.evidenceChains.forEach((chain, i) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Chain ${i + 1} [${(chain.confidence || 'unknown').toUpperCase()}] — ${chain.title || ''}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Implied finding: ', bold: true }), new TextRun(chain.impliedFinding || '')] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+        if (chain.steps?.length) {
+          chain.steps.forEach((step) => {
+            children.push(new Paragraph({ children: [new TextRun({ text: `Step ${step.stepNumber}: `, bold: true }), new TextRun(`${step.finding} (${step.source})`)] }))
+            if (step.logic && step.stepNumber < chain.steps.length) {
+              children.push(new Paragraph({ children: [new TextRun({ text: `  → ${step.logic}`, italics: true })] }))
+            }
+          })
+          children.push(new Paragraph({ children: [new TextRun('')] }))
+        }
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Assumption: ', bold: true }), new TextRun(chain.assumption || '')] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Why novel: ', bold: true }), new TextRun(chain.whyNovel || '')] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Practical implication: ', bold: true }), new TextRun(chain.practicalImplication || '')] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(`Corpus — ${papers.length} papers`)] }))
     papers.forEach((p) => {
       children.push(new Paragraph({
@@ -1343,6 +1433,7 @@ ${priorForDiagnostic}`
     { key: 'tensionTopology', label: 'Tension Topology', color: COLORS.blue, count: analysis.tensionTopology?.length },
     { key: 'methodologicalCritique', label: 'Method Critique', color: COLORS.amber, count: analysis.methodologicalCritique?.length },
     { key: 'hypotheses', label: 'Hypotheses', color: COLORS.purple, count: analysis.hypotheses?.length },
+    { key: 'evidenceChains', label: 'Evidence Chains', color: '#2dd4bf', count: analysis.evidenceChains?.length },
     { key: 'synthesis', label: 'Synthesis', color: COLORS.muted },
     { key: 'corpus', label: 'Corpus', color: COLORS.muted, count: papers.length },
     { key: 'log', label: 'Process Log', color: COLORS.muted },
@@ -1354,6 +1445,7 @@ ${priorForDiagnostic}`
     { label: 'Method Critique', fn: runMethodologicalCritique, done: !!analysis.methodologicalCritique },
     { label: 'Hypotheses', fn: runHypothesisGeneration, done: !!analysis.hypotheses },
     { label: 'Field Diagnostic', fn: runFieldDiagnostic, done: !!analysis.fieldDiagnostic },
+    { label: 'Evidence Chains', fn: runEvidenceChains, done: !!analysis.evidenceChains },
     { label: 'Run All Modules', fn: runAllModules, done: !!analysis.fieldDiagnostic },
   ]
 
@@ -1364,13 +1456,6 @@ ${priorForDiagnostic}`
         setStage('onboarding')
       }} />
     )
-  }
-
-  if (stage === 'landing') {
-    return <Landing onEnter={() => {
-      localStorage.setItem('prism_visited', '1')
-      setStage('onboarding')
-    }} />
   }
 
   if (stage === 'onboarding') {
@@ -1914,6 +1999,108 @@ ${priorForDiagnostic}`
                 <div style={styles.tagRow}>
                   {item.tags?.map((t, j) => <span key={j} style={styles.tag}>{t}</span>)}
                   {item.methods?.map((m, j) => <span key={j} style={{ ...styles.tag, borderColor: COLORS.accent + '44', color: COLORS.accent + 'aa' }}>{m}</span>)}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activePanel === 'evidenceChains' && !analysis.evidenceChains && (
+          <div style={styles.card}>
+            <div style={styles.sectionTitle}>Evidence Chains</div>
+            <p style={{ color: COLORS.muted, fontSize: '12px', marginTop: '4px', lineHeight: 1.8 }}>
+              Run Evidence Chains from the sidebar to identify cross-study findings — quantitative conclusions that emerge from combining results across multiple papers, but that no single study has established directly.
+            </p>
+          </div>
+        )}
+
+        {activePanel === 'evidenceChains' && analysis.evidenceChains && (
+          <div>
+            <div style={styles.sectionTitle}>Evidence Chains</div>
+            <div style={styles.sectionSub}>Cross-study synthesis — findings that exist in the literature but have never been connected</div>
+
+            {/* Summary table */}
+            <div style={{ ...styles.card, marginBottom: '20px', overflowX: 'auto' }}>
+              <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '12px' }}>Summary</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                    {['Finding', 'Implied Result', 'Steps', 'Confidence'].map(h => (
+                      <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: COLORS.muted, fontWeight: 'normal', letterSpacing: '0.06em' }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysis.evidenceChains.map((chain, i) => (
+                    <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                      <td style={{ padding: '8px 10px', color: COLORS.text, maxWidth: '200px' }}>{chain.title}</td>
+                      <td style={{ padding: '8px 10px', color: COLORS.muted, maxWidth: '260px', lineHeight: 1.5 }}>{chain.impliedFinding}</td>
+                      <td style={{ padding: '8px 10px', color: COLORS.text, textAlign: 'center' }}>{chain.inferenceSteps}</td>
+                      <td style={{ padding: '8px 10px' }}>
+                        <span style={{
+                          fontSize: '10px', padding: '2px 8px', borderRadius: '4px',
+                          background: chain.confidence === 'high' ? 'rgba(74,242,161,0.1)' : chain.confidence === 'medium' ? 'rgba(245,166,35,0.1)' : 'rgba(255,95,95,0.1)',
+                          color: chain.confidence === 'high' ? COLORS.accent : chain.confidence === 'medium' ? COLORS.amber : COLORS.red,
+                          border: `1px solid ${chain.confidence === 'high' ? COLORS.accent : chain.confidence === 'medium' ? COLORS.amber : COLORS.red}`,
+                        }}>{chain.confidence}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Full chain detail */}
+            {analysis.evidenceChains.map((chain, i) => (
+              <div key={i} style={{ ...styles.card, marginBottom: '16px', borderLeft: `3px solid #2dd4bf` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                  <div style={{ fontFamily: '"Times New Roman", serif', fontSize: '15px', color: COLORS.text }}>{chain.title}</div>
+                  <span style={{
+                    fontSize: '10px', padding: '2px 8px', borderRadius: '4px', flexShrink: 0, marginLeft: '12px',
+                    background: chain.confidence === 'high' ? 'rgba(74,242,161,0.1)' : chain.confidence === 'medium' ? 'rgba(245,166,35,0.1)' : 'rgba(255,95,95,0.1)',
+                    color: chain.confidence === 'high' ? COLORS.accent : chain.confidence === 'medium' ? COLORS.amber : COLORS.red,
+                    border: `1px solid ${chain.confidence === 'high' ? COLORS.accent : chain.confidence === 'medium' ? COLORS.amber : COLORS.red}`,
+                  }}>{chain.confidence} confidence</span>
+                </div>
+
+                <div style={{ fontSize: '13px', color: '#2dd4bf', lineHeight: 1.7, marginBottom: '14px', fontStyle: 'italic' }}>
+                  → {chain.impliedFinding}
+                </div>
+
+                {/* Step-by-step chain */}
+                <div style={{ marginBottom: '12px' }}>
+                  {chain.steps?.map((step, j) => (
+                    <div key={j} style={{ display: 'flex', gap: '12px', marginBottom: '10px' }}>
+                      <div style={{
+                        width: '22px', height: '22px', borderRadius: '50%', flexShrink: 0,
+                        background: j === chain.steps.length - 1 ? '#2dd4bf22' : COLORS.surface2,
+                        border: `1px solid ${j === chain.steps.length - 1 ? '#2dd4bf' : COLORS.border2}`,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: '10px', color: j === chain.steps.length - 1 ? '#2dd4bf' : COLORS.muted,
+                      }}>{step.stepNumber}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '12px', color: j === chain.steps.length - 1 ? '#2dd4bf' : COLORS.text, lineHeight: 1.6, marginBottom: '2px' }}>
+                          {step.finding}
+                        </div>
+                        <div style={{ fontSize: '10px', color: COLORS.muted }}>{step.source}</div>
+                        {step.logic && j < chain.steps.length - 1 && (
+                          <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '4px', fontStyle: 'italic' }}>↓ {step.logic}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ fontSize: '11px', color: COLORS.muted }}>
+                    <span style={{ color: COLORS.amber }}>Assumption: </span>{chain.assumption}
+                  </div>
+                  <div style={{ fontSize: '11px', color: COLORS.muted }}>
+                    <span style={{ color: COLORS.text }}>Why novel: </span>{chain.whyNovel}
+                  </div>
+                  <div style={{ fontSize: '11px', color: COLORS.muted }}>
+                    <span style={{ color: COLORS.accent }}>Practical implication: </span>{chain.practicalImplication}
+                  </div>
                 </div>
               </div>
             ))}

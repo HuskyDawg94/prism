@@ -3,7 +3,6 @@ import '@fontsource/dm-mono'
 import { Analytics } from '@vercel/analytics/react'
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx'
 import Landing from './Landing.jsx'
-import Landing from './Landing.jsx'
 
 const COLORS = {
   bg: '#080c0f',

@@ -477,6 +477,9 @@ export default function App() {
       }),
     })
     const data = await response.json()
+    if (!response.ok || data.error || !data.content?.[0]?.text) {
+      throw new Error(data.error?.message || data.error || `API error ${response.status}`)
+    }
     // Sonnet: $3/MTok input, $15/MTok output
     if (data.usage) {
       const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
@@ -501,6 +504,9 @@ export default function App() {
       const cost = (data.usage.input_tokens / 1_000_000) * 0.25 + (data.usage.output_tokens / 1_000_000) * 1.25
       setSessionCost((prev) => prev + cost)
     }
+    if (!response.ok || data.error || !data.content?.[0]?.text) {
+      throw new Error(data.error?.message || data.error || `Haiku API error ${response.status}`)
+    }
     return data.content[0].text
   }
 
@@ -520,7 +526,10 @@ export default function App() {
       const outputCost = (data.usage.output_tokens / 1_000_000) * 15
       setSessionCost((prev) => prev + inputCost + outputCost)
     }
-    const text = data.content?.[0]?.text || ''
+    if (!response.ok || data.error || !data.content?.[0]?.text) {
+      throw new Error(data.error?.message || data.error || `Cached API error ${response.status}`)
+    }
+    const text = data.content[0].text
     return text
   }
 
@@ -533,7 +542,7 @@ export default function App() {
       `You are helping a researcher search academic databases for the topic: "${query}".
 Selected databases: ${dbList}
 
-Generate 6 specific, high-quality search terms that work well across these databases.
+Generate 8 specific, high-quality search terms that work well across these databases. For niche topics, include broader related terms that would capture adjacent literature — e.g. related techniques, upstream/downstream processes, animal welfare aspects, and industry applications.
 Also estimate how relevant each selected database is for this topic on a scale 1-10.
 
 Rules for terms: each should be a distinct angle, use field-specific language, vary specificity.
@@ -542,7 +551,7 @@ ${selectedDatabases.openalex || selectedDatabases.semanticscholar ? 'For OpenAle
 
 Return ONLY this JSON, nothing else:
 {
-  "terms": ["term1", "term2", "term3", "term4", "term5", "term6"],
+  "terms": ["term1", "term2", "term3", "term4", "term5", "term6", "term7", "term8"],
   "dbWeights": {
     "pubmed": 8,
     "openalex": 6,
@@ -837,7 +846,7 @@ Return ONLY this JSON, nothing else:
     // Calculate per-term count per db using weights — higher weight = more results
     function perTermCount(dbKey) {
       const weight = dbWeights[dbKey] || 5
-      const base = Math.ceil((paperCount / proposedTerms.length) * 1.5)
+      const base = Math.ceil((paperCount / proposedTerms.length) * 3.0)
       return Math.ceil(base * (weight / 8))
     }
 
@@ -1104,12 +1113,14 @@ ${priorAnalysis}`
 
       // Build full paper index — title, year, authors, abstract for every paper
       // This lets Claude reference any paper directly rather than only what survived synthesis compression
-      const paperIndex = papers
-        .filter(p => p.abstract && p.abstract !== 'No abstract available')
-        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 900)}`)
+      // Cap at 120 papers, 700 chars each to stay within API limits (~100k tokens max input)
+      const paperPool = papers.filter(p => p.abstract && p.abstract !== 'No abstract available')
+      const paperSample = paperPool.slice(0, 120)
+      const paperIndex = paperSample
+        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 700)}`)
         .join('\n\n')
 
-      log(`Evidence chains: indexing ${papers.filter(p => p.abstract && p.abstract !== 'No abstract available').length} papers with abstracts`)
+      log(`Evidence chains: indexing ${paperSample.length} of ${paperPool.length} papers with abstracts`)
 
       const prompt = `You are a rigorous research analyst performing cross-study synthesis across ${papers.length} papers on "${query}".
 

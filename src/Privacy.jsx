@@ -101,7 +101,7 @@ export default function Privacy() {
         </Section>
 
         <Section title="Contact">
-          Questions about this privacy policy can be directed to u1469338@utah.edu or via the feedback form at useprism.net.
+          Questions about this privacy policy can be directed to Casey Westring at chwest05@icloud.com or via the feedback form at useprism.net.
         </Section>
       </div>
 

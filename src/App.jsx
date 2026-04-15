@@ -1131,61 +1131,25 @@ ${priorAnalysis}`
     try {
       const syn = await getOrBuildSummary()
       const paperPool = papers.filter(p => p.abstract && p.abstract !== 'No abstract available')
-      const paperSample = paperPool.slice(0, 120)
-      log(`Evidence chains: processing ${paperSample.length} papers in two passes`)
+      const paperSample = paperPool.slice(0, 100)
+      log(`Evidence chains: processing ${paperSample.length} papers`)
 
-      // ── Pass 1: Haiku extracts quantitative findings from all abstracts ──────
-      // Break papers into batches of 20 so Haiku can process them fast and cheap
-      setLoadingMessage('Extracting quantitative findings from papers...')
-      const batchSize = 20
+      // Strategy: split papers into batches of 30, run Sonnet on each batch directly
+      // with the full synthesis as context. Then merge all chains found.
+      // This gives Sonnet real abstracts not Haiku-compressed extractions.
+      const batchSize = 30
       const batches = []
       for (let i = 0; i < paperSample.length; i += batchSize) {
         batches.push(paperSample.slice(i, i + batchSize))
       }
 
-      const extractionResults = await Promise.all(batches.map((batch, bi) => {
-        const batchText = batch
-          .map((p, i) => {
-            const idx = bi * batchSize + i + 1
-            return `[${idx}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 600)}`
-          })
-          .join('\n\n')
-        return callHaiku(
-          `Extract all specific quantitative findings from these research papers on "${query}". For each paper, list ONLY findings that contain numbers, measurements, percentages, rates, thresholds, effect sizes, costs, or other quantifiable data. Skip papers with no quantitative data. Format: [paper_number] Author et al. (Year): "exact finding with numbers" — what it measures.\n\nPAPERS:\n${batchText}`,
-          2000
-        )
-      }))
+      log(`Evidence chains: running ${batches.length} batch(es) of up to ${batchSize} papers each`)
 
-      const extractedFindings = extractionResults.join('\n\n')
-      log(`Evidence chains: quantitative findings extracted, building chains...`)
-
-      // ── Pass 2: Sonnet builds chains from the compact extracted findings ─────
-      setLoadingMessage('Building evidence chains from extracted findings...')
-
-      const chainPrompt = `You are a rigorous research analyst performing cross-study synthesis across ${paperSample.length} papers on "${query}".
-
-Below is a structured extraction of quantitative findings from the papers. Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
-
-Rules:
-- A chain can connect 2, 3, 4, 5 or more papers — use as many as the evidence supports
-- Every step must reference a specific extracted finding — do not fabricate
-- Quantify the implied finding where possible, even if approximate
-- Flag each step as measured (drawn directly from paper data) or inferred (logical bridge)
-- Be explicit about uncertainty and the key assumption each chain rests on
-- A well-grounded 3-step chain beats a speculative 6-step chain
-
-EXTRACTED QUANTITATIVE FINDINGS:
-${extractedFindings}
-
-MASTER SYNTHESIS (for broader context):
-${syn}
-
-Return ONLY this JSON, no markdown:
-{
+      const chainTemplate = `{
   "chains": [
     {
       "title": "Short descriptive title",
-      "impliedFinding": "The cross-study conclusion, quantified where possible",
+      "impliedFinding": "Cross-study conclusion, quantified where possible",
       "confidence": "high|medium|low",
       "inferenceSteps": <integer>,
       "paperCount": <integer>,
@@ -1206,22 +1170,74 @@ Return ONLY this JSON, no markdown:
   ]
 }`
 
-      // Use long-timeout endpoint for chain building — large prompt needs 5min window
-      let result
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const text = await callClaudeLong(chainPrompt, 8000)
-          const cleaned = text.replace(/```json|```/g, '').trim()
-          result = JSON.parse(cleaned).chains
-          break
-        } catch (e) {
-          if (attempt === 3) throw e
-          log(`Chain build parse failed, retrying (${attempt}/3)...`)
-          await new Promise(r => setTimeout(r, 2000))
+      // Run batches sequentially to avoid timeout stacking
+      const allChains = []
+      for (let bi = 0; bi < batches.length; bi++) {
+        const batch = batches[bi]
+        setLoadingMessage(`Building evidence chains — batch ${bi + 1} of ${batches.length}...`)
+        log(`Evidence chains: batch ${bi + 1}/${batches.length} (${batch.length} papers)`)
+
+        const paperText = batch
+          .map((p, i) => {
+            const globalIdx = bi * batchSize + i + 1
+            return `[${globalIdx}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 800)}`
+          })
+          .join('\n\n')
+
+        const batchPrompt = `You are a rigorous research analyst performing cross-study synthesis for papers on "${query}".
+
+Identify evidence chains in this batch of ${batch.length} papers — logical connections across multiple separate studies that together produce an empirical finding no single paper has established. You may also connect findings from these papers to findings mentioned in the master synthesis if the connection is well-grounded.
+
+Rules:
+- Use as many papers per chain as the evidence genuinely supports (2-6+)
+- Every step must reference a specific paper from this batch or the synthesis
+- Quantify implied findings where possible — include numbers, units, approximate ranges
+- Flag each step: measured = direct from paper data, inferred = logical bridge
+- Be conservative — a tight 3-step chain beats a speculative 5-step chain
+- Return empty chains array if no genuine chains exist in this batch
+
+PAPERS (batch ${bi + 1}/${batches.length}):
+${paperText}
+
+MASTER SYNTHESIS (for cross-batch connections):
+${syn.slice(0, 2000)}
+
+Return ONLY this JSON, no markdown:
+${chainTemplate}`
+
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const text = await callClaudeLong(batchPrompt, 6000)
+            const cleaned = text.replace(/```json|```/g, '').trim()
+            const parsed = JSON.parse(cleaned)
+            const batchChains = parsed.chains || []
+            allChains.push(...batchChains)
+            log(`Batch ${bi + 1}: found ${batchChains.length} chain(s)`)
+            break
+          } catch (e) {
+            if (attempt === 2) {
+              log(`Batch ${bi + 1}: parse failed, skipping`)
+            } else {
+              await new Promise(r => setTimeout(r, 1500))
+            }
+          }
         }
+
+        // Small delay between batches
+        if (bi < batches.length - 1) await new Promise(r => setTimeout(r, 500))
       }
-      setAnalysis((prev) => ({ ...prev, evidenceChains: result }))
-      log(`Evidence chain synthesis complete — ${result?.length || 0} chains found`)
+
+      // Deduplicate chains by title similarity
+      const seen = new Set()
+      const uniqueChains = allChains.filter(c => {
+        const key = c.title?.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40)
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
+      setAnalysis((prev) => ({ ...prev, evidenceChains: uniqueChains }))
+      log(`Evidence chain synthesis complete — ${uniqueChains.length} unique chain(s) across ${paperSample.length} papers`)
       setLoading(false)
       setActivePanel('evidenceChains')
     } catch (err) {

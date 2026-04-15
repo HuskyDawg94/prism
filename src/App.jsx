@@ -1102,44 +1102,56 @@ ${priorAnalysis}`
       log('Running evidence chain synthesis...')
       const syn = await getOrBuildSummary()
 
-      const prompt = `You are a rigorous research analyst performing cross-study synthesis. Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
+      // Build full paper index — title, year, authors, abstract for every paper
+      // This lets Claude reference any paper directly rather than only what survived synthesis compression
+      const paperIndex = papers
+        .filter(p => p.abstract && p.abstract !== 'No abstract available')
+        .map((p, i) => `[${i + 1}] ${p.authors ? p.authors.split(',')[0].trim() : 'Unknown'} et al. (${p.year || '?'}) — ${p.title}\nAbstract: ${p.abstract.slice(0, 600)}`)
+        .join('\n\n')
+
+      log(`Evidence chains: indexing ${papers.filter(p => p.abstract && p.abstract !== 'No abstract available').length} papers with abstracts`)
+
+      const prompt = `You are a rigorous research analyst performing cross-study synthesis across ${papers.length} papers on "${query}".
+
+Your task is to identify evidence chains — logical connections across multiple separate studies that, when combined, produce an empirical finding or quantitative estimate that no single paper has established.
+
+A chain can use 2, 3, 4, 5 or more papers — use as many as the evidence genuinely supports. Longer chains that are well-grounded are more valuable than short chains built on weak connections. There is no maximum number of papers per chain.
 
 For each chain:
-1. Extract specific quantitative findings from different papers (measurements, rates, thresholds, costs, correlations)
-2. Show the logical steps connecting them
-3. State the implied finding that emerges from the chain
-4. Be explicit about assumptions and uncertainty
-5. Cite which papers each step draws from (use author/year format)
+1. Extract specific quantitative findings from the individual paper abstracts (measurements, rates, thresholds, costs, effect sizes, correlations, percentages)
+2. Show the logical steps connecting them — each step must reference a specific paper from the index
+3. State the implied finding that emerges — quantify it where possible even if approximate
+4. Flag uncertainty explicitly: if a step is an inference rather than a direct measurement, say so
+5. State the confidence level honestly — more inferential steps = lower confidence unless each step is tightly grounded
 
-Only include chains where each step is grounded in an actual finding from the literature. Do not speculate beyond what the data supports. Label confidence honestly.
+Only include chains where every step draws from an actual finding in the provided papers. Do not fabricate citations or extrapolate beyond what the abstracts contain. A chain with fewer well-grounded steps is better than a chain with more speculative ones.
+
+Use this paper index for citations — reference papers as "Author et al. (Year)" matching the index entries:
+
+PAPER INDEX:
+${paperIndex}
+
+MASTER SYNTHESIS (for context):
+${syn}
 
 Return ONLY this JSON, no markdown:
 {
   "chains": [
     {
       "title": "Short descriptive title of the implied finding",
-      "impliedFinding": "The cross-study conclusion in one clear sentence, with approximate quantification where possible",
+      "impliedFinding": "The cross-study conclusion in one clear sentence, quantified where possible",
       "confidence": "high|medium|low",
-      "inferenceSteps": 2,
+      "inferenceSteps": <number of papers connected>,
+      "paperCount": <number of distinct papers used>,
+      "uncertainty": "Explicit statement of what is inferred vs directly measured and where the chain could break",
       "assumption": "The key assumption this chain rests on",
       "steps": [
         {
           "stepNumber": 1,
-          "finding": "Specific quantitative finding from the literature",
+          "finding": "Specific quantitative finding from the paper — include numbers, units, conditions",
           "source": "Author et al. (Year)",
-          "logic": "How this connects to the next step"
-        },
-        {
-          "stepNumber": 2,
-          "finding": "Specific quantitative finding from the literature",
-          "source": "Author et al. (Year)",
-          "logic": "How this connects to the next step"
-        },
-        {
-          "stepNumber": 3,
-          "finding": "The implied finding that emerges from combining the above",
-          "source": "Cross-study inference",
-          "logic": "Terminal step — this is the novel finding"
+          "measured": true,
+          "logic": "How this finding connects to the next step"
         }
       ],
       "whyNovel": "Why this specific connection has not been made in a single study",
@@ -1148,9 +1160,10 @@ Return ONLY this JSON, no markdown:
   ]
 }`
 
-      const result = await callWithRetry(prompt, 'chains', 8000, syn)
+      // Evidence chains gets a larger token budget since it processes full abstracts
+      const result = await callWithRetry(prompt, 'chains', 10000)
       setAnalysis((prev) => ({ ...prev, evidenceChains: result }))
-      log('Evidence chain synthesis complete')
+      log(`Evidence chain synthesis complete — ${result?.length || 0} chains found`)
       setLoading(false)
       setActivePanel('evidenceChains')
     } catch (err) {
@@ -1380,16 +1393,21 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.evidenceChains.forEach((chain, i) => {
         children.push(new Paragraph({ children: [new TextRun({ text: `Chain ${i + 1} [${(chain.confidence || 'unknown').toUpperCase()}] — ${chain.title || ''}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `${chain.paperCount || chain.inferenceSteps} papers connected`, italics: true })] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Implied finding: ', bold: true }), new TextRun(chain.impliedFinding || '')] }))
         children.push(new Paragraph({ children: [new TextRun('')] }))
         if (chain.steps?.length) {
           chain.steps.forEach((step) => {
-            children.push(new Paragraph({ children: [new TextRun({ text: `Step ${step.stepNumber}: `, bold: true }), new TextRun(`${step.finding} (${step.source})`)] }))
+            const measuredLabel = step.measured === false ? '[INFERRED] ' : step.measured === true ? '[MEASURED] ' : ''
+            children.push(new Paragraph({ children: [new TextRun({ text: `Step ${step.stepNumber} ${measuredLabel}`, bold: true }), new TextRun(`${step.finding} (${step.source})`)] }))
             if (step.logic && step.stepNumber < chain.steps.length) {
               children.push(new Paragraph({ children: [new TextRun({ text: `  → ${step.logic}`, italics: true })] }))
             }
           })
           children.push(new Paragraph({ children: [new TextRun('')] }))
+        }
+        if (chain.uncertainty) {
+          children.push(new Paragraph({ children: [new TextRun({ text: 'Uncertainty: ', bold: true }), new TextRun(chain.uncertainty)] }))
         }
         children.push(new Paragraph({ children: [new TextRun({ text: 'Assumption: ', bold: true }), new TextRun(chain.assumption || '')] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Why novel: ', bold: true }), new TextRun(chain.whyNovel || '')] }))
@@ -2049,7 +2067,7 @@ ${priorForDiagnostic}`
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px' }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                    {['Finding', 'Implied Result', 'Steps', 'Confidence'].map(h => (
+                    {['Finding', 'Implied Result', 'Papers', 'Confidence'].map(h => (
                       <th key={h} style={{ textAlign: 'left', padding: '6px 10px', color: COLORS.muted, fontWeight: 'normal', letterSpacing: '0.06em' }}>{h}</th>
                     ))}
                   </tr>
@@ -2059,7 +2077,7 @@ ${priorForDiagnostic}`
                     <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                       <td style={{ padding: '8px 10px', color: COLORS.text, maxWidth: '200px' }}>{chain.title}</td>
                       <td style={{ padding: '8px 10px', color: COLORS.muted, maxWidth: '260px', lineHeight: 1.5 }}>{chain.impliedFinding}</td>
-                      <td style={{ padding: '8px 10px', color: COLORS.text, textAlign: 'center' }}>{chain.inferenceSteps}</td>
+                      <td style={{ padding: '8px 10px', color: COLORS.text, textAlign: 'center' }}>{chain.paperCount || chain.inferenceSteps}</td>
                       <td style={{ padding: '8px 10px' }}>
                         <span style={{
                           fontSize: '10px', padding: '2px 8px', borderRadius: '4px',
@@ -2103,6 +2121,14 @@ ${priorForDiagnostic}`
                         fontSize: '10px', color: j === chain.steps.length - 1 ? '#2dd4bf' : COLORS.muted,
                       }}>{step.stepNumber}</div>
                       <div style={{ flex: 1 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                          {step.measured === false && (
+                            <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(245,166,35,0.1)', color: COLORS.amber, border: `1px solid ${COLORS.amber}44`, flexShrink: 0 }}>inferred</span>
+                          )}
+                          {step.measured === true && (
+                            <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(74,242,161,0.08)', color: COLORS.accent, border: `1px solid ${COLORS.accent}44`, flexShrink: 0 }}>measured</span>
+                          )}
+                        </div>
                         <div style={{ fontSize: '12px', color: j === chain.steps.length - 1 ? '#2dd4bf' : COLORS.text, lineHeight: 1.6, marginBottom: '2px' }}>
                           {step.finding}
                         </div>
@@ -2116,6 +2142,11 @@ ${priorForDiagnostic}`
                 </div>
 
                 <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {chain.uncertainty && (
+                    <div style={{ fontSize: '11px', color: COLORS.muted }}>
+                      <span style={{ color: COLORS.amber }}>Uncertainty: </span>{chain.uncertainty}
+                    </div>
+                  )}
                   <div style={{ fontSize: '11px', color: COLORS.muted }}>
                     <span style={{ color: COLORS.amber }}>Assumption: </span>{chain.assumption}
                   </div>
@@ -2125,6 +2156,11 @@ ${priorForDiagnostic}`
                   <div style={{ fontSize: '11px', color: COLORS.muted }}>
                     <span style={{ color: COLORS.accent }}>Practical implication: </span>{chain.practicalImplication}
                   </div>
+                  {chain.paperCount && (
+                    <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '2px' }}>
+                      {chain.paperCount} papers connected · {chain.inferenceSteps} inference steps
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

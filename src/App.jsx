@@ -878,7 +878,7 @@ Return ONLY this JSON, nothing else:
       return Math.ceil(base * (weight / 8))
     }
 
-    const allFetches = []
+    const termBuckets = []
     for (const [i, term] of proposedTerms.entries()) {
       await new Promise(r => setTimeout(r, i * 150))
       const dbFetches = []
@@ -899,20 +899,33 @@ Return ONLY this JSON, nothing else:
         dbFetches.push(fetchEuropePMC(term, perTermCount('europepmc')))
       }
       const termResults = await Promise.all(dbFetches)
-      allFetches.push(...termResults.flat())
+      // Deduplicate within this term before bucketing
+      const termSeen = new Set()
+      const termUnique = []
+      for (const paper of termResults.flat()) {
+        const key = paper.title?.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60)
+        if (key && !termSeen.has(key)) { termSeen.add(key); termUnique.push(paper) }
+      }
+      termBuckets.push(termUnique)
     }
 
-    // Deduplicate by normalized title (cross-database dedup)
-    const seen = new Set()
+    // Round-robin interleave across all terms — one paper per term per pass,
+    // deduplicating globally so early terms don't crowd out later ones.
+    const globalSeen = new Set()
     const allPapers = []
-    for (const paper of allFetches) {
-      const key = paper.title?.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60)
-      if (key && !seen.has(key)) {
-        seen.add(key)
-        allPapers.push(paper)
+    const indices = termBuckets.map(() => 0)
+    let anyAdded = true
+    while (allPapers.length < paperCount && anyAdded) {
+      anyAdded = false
+      for (let b = 0; b < termBuckets.length; b++) {
+        if (allPapers.length >= paperCount) break
+        while (indices[b] < termBuckets[b].length) {
+          const paper = termBuckets[b][indices[b]++]
+          const key = paper.title?.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 60)
+          if (key && !globalSeen.has(key)) { globalSeen.add(key); allPapers.push(paper); anyAdded = true; break }
+        }
       }
     }
-    allPapers.splice(paperCount)
 
     log(`Found ${allPapers.length} unique papers across ${activeDbs.join(', ')}`)
 

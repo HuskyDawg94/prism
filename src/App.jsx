@@ -643,7 +643,7 @@ Return ONLY this JSON, nothing else:
   // ── Semantic Scholar fetcher ──────────────────────────────────────────────
   async function fetchSemanticScholar(term, count) {
     try {
-      const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(term)}&limit=${Math.min(count, 50)}&fields=paperId,title,authors,year,venue,abstract`
+      const url = `${BACKEND}/api/semanticscholar/search?query=${encodeURIComponent(term)}&limit=${Math.min(count, 50)}&fields=paperId,title,authors,year,venue,abstract`
       const res = await fetch(url)
       const data = await res.json()
       return (data.data || []).filter(p => p.abstract).map((p) => ({
@@ -1292,7 +1292,7 @@ ${syn}
 PAPERS:
 ${paperList}`
       const raw = await callClaudeLong(prompt, 5000)
-      const parsed = JSON.parse(raw)
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
       const precedents = parsed.precedents || []
       setAnalysis((prev) => ({ ...prev, methodsPrecedent: precedents }))
       log(`Methods precedent: found ${precedents.length} matching paper(s)`)
@@ -1333,7 +1333,7 @@ ${syn}
 
 ${priorAnalysis ? `PRIOR FIELD ANALYSIS:\n${priorAnalysis}` : ''}`
       const raw = await callClaudeLong(prompt, 5000)
-      const parsed = JSON.parse(raw)
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
       const objections = parsed.objections || []
       setAnalysis((prev) => ({ ...prev, reviewerAnticipator: objections }))
       log(`Reviewer anticipator: identified ${objections.length} likely objection(s)`)
@@ -1376,7 +1376,7 @@ ${syn}
 PAPERS:
 ${paperList}`
       const raw = await callClaudeLong(prompt, 6000)
-      const parsed = JSON.parse(raw)
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
       const clusters = parsed.clusters || []
       setAnalysis((prev) => ({ ...prev, relatedWorkMapper: clusters }))
       log(`Related work mapper: identified ${clusters.length} cluster(s)`)

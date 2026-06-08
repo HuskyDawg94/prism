@@ -403,6 +403,8 @@ export default function App() {
   const [sessionCost, setSessionCost] = useState(0)
   const [selectedDatabases, setSelectedDatabases] = useState({ pubmed: true, openalex: false, semanticscholar: false, europepmc: false })
   const [dbWeights, setDbWeights] = useState({ pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
+  const [methodsInput, setMethodsInput] = useState(() => localStorage.getItem('prism_methods_input') || '')
+  const [findingsInput, setFindingsInput] = useState(() => localStorage.getItem('prism_findings_input') || '')
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
     const saved = localStorage.getItem('prism_profile')
@@ -423,6 +425,8 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prism_analysis', JSON.stringify(analysis)) }, [analysis])
   useEffect(() => { localStorage.setItem('prism_summary', summary) }, [summary])
   useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
+  useEffect(() => { localStorage.setItem('prism_methods_input', methodsInput) }, [methodsInput])
+  useEffect(() => { localStorage.setItem('prism_findings_input', findingsInput) }, [findingsInput])
 
   function clearSession() {
     localStorage.clear()
@@ -432,6 +436,8 @@ export default function App() {
     setAnalysis({})
     setSummary('')
     setProcessLog([])
+    setMethodsInput('')
+    setFindingsInput('')
     setStage('landing')
   }
 
@@ -1247,6 +1253,129 @@ ${chainTemplate}`
     }
   }
 
+  async function runMethodsPrecedent() {
+    if (!methodsInput.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      setLoadingMessage('Finding methods precedents...')
+      log('Methods precedent: scanning corpus...')
+      const syn = await getOrBuildSummary()
+      const paperList = papers.slice(0, 120).map((p, i) =>
+        `${i + 1}. "${p.title}" (${p.year}) — ${p.abstract?.slice(0, 200) || 'No abstract'}...`
+      ).join('\n')
+      const prompt = `You are analyzing a corpus of ${papers.length} papers on "${query}".
+
+The researcher used the following methods: ${methodsInput}
+
+Your task: identify papers from this corpus that used the same or closely related methods. For each match, describe specifically how they handled this methodological approach — what decisions they made, what parameters or analyses they used, what they controlled for, and what worked or didn't. Focus on methodological specifics, not just topical similarity.
+
+Return ONLY this JSON, no markdown:
+{"precedents":[{"title":"string","year":number,"methodDescription":"string describing how they specifically used this approach","relevance":"high|medium|low","note":"string — what is most useful about this paper as a comparison"}]}
+
+CORPUS SYNTHESIS:
+${syn}
+
+PAPERS:
+${paperList}`
+      const raw = await callClaudeLong(prompt, 5000)
+      const parsed = JSON.parse(raw)
+      const precedents = parsed.precedents || []
+      setAnalysis((prev) => ({ ...prev, methodsPrecedent: precedents }))
+      log(`Methods precedent: found ${precedents.length} matching paper(s)`)
+      setLoading(false)
+      setActivePanel('methodsPrecedent')
+    } catch (err) {
+      console.error('runMethodsPrecedent error:', err)
+      setError('Methods precedent search failed. Please try again.')
+      setLoading(false)
+    }
+  }
+
+  async function runReviewerAnticipator() {
+    if (!findingsInput.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      setLoadingMessage('Anticipating reviewer objections...')
+      log('Reviewer anticipator: generating objections...')
+      const syn = await getOrBuildSummary()
+      const priorAnalysis = [
+        analysis.tensionTopology ? `FIELD TENSIONS:\n${analysis.tensionTopology.map((t) => `- [${t.type}] ${t.title}: ${t.rootCause}`).join('\n')}` : '',
+        analysis.methodologicalCritique ? `KNOWN METHODOLOGICAL PROBLEMS:\n${analysis.methodologicalCritique.map((c) => `- [${c.severity}] ${c.issue}: ${c.description}`).join('\n')}` : '',
+        analysis.absenceMapping ? `FIELD GAPS:\n${analysis.absenceMapping.map((a) => `- [${a.significance}] ${a.category}: ${a.description}`).join('\n')}` : '',
+      ].filter(Boolean).join('\n\n')
+      const prompt = `You are a rigorous peer reviewer evaluating a manuscript on "${query}".
+
+The researcher describes their study as follows:
+${findingsInput}
+
+Based on the literature synthesis and prior field analysis below, identify the most likely reviewer objections — not generic concerns, but specific critiques grounded in what this field's reviewers actually know and care about. For each objection, explain how the researcher could address it proactively in their manuscript.
+
+Return ONLY this JSON, no markdown:
+{"objections":[{"objection":"string — the specific critique a reviewer would raise","severity":"major|minor","basis":"string — what in the literature or field's known problems grounds this concern","preemption":"string — concrete advice for how to address this proactively in the paper","source":"tension|methodological|gap|general"}]}
+
+SYNTHESIS:
+${syn}
+
+${priorAnalysis ? `PRIOR FIELD ANALYSIS:\n${priorAnalysis}` : ''}`
+      const raw = await callClaudeLong(prompt, 5000)
+      const parsed = JSON.parse(raw)
+      const objections = parsed.objections || []
+      setAnalysis((prev) => ({ ...prev, reviewerAnticipator: objections }))
+      log(`Reviewer anticipator: identified ${objections.length} likely objection(s)`)
+      setLoading(false)
+      setActivePanel('reviewerAnticipator')
+    } catch (err) {
+      console.error('runReviewerAnticipator error:', err)
+      setError('Reviewer anticipator failed. Please try again.')
+      setLoading(false)
+    }
+  }
+
+  async function runRelatedWorkMapper() {
+    setLoading(true)
+    setError(null)
+    try {
+      setLoadingMessage('Mapping related work clusters...')
+      log('Related work mapper: clustering corpus...')
+      const syn = await getOrBuildSummary()
+      const paperList = papers.slice(0, 120).map((p, i) =>
+        `${i + 1}. "${p.title}" (${p.year}) — ${p.abstract?.slice(0, 150) || 'No abstract'}...`
+      ).join('\n')
+      const prompt = `You are analyzing a corpus of ${papers.length} papers on "${query}".
+
+Your task: organize this literature into thematic clusters that a researcher could use to structure their Related Work or Introduction section. Each cluster should represent a coherent strand of research — a set of papers making a related argument — not just a keyword grouping.
+
+For each cluster:
+- Give it a descriptive theme name that captures what this strand argues, not just what it studies (e.g., "Cross-sectional DTI studies linking white matter to processing speed" not just "DTI")
+- Briefly describe the cluster's collective contribution to the field
+- List the specific paper titles that belong to it
+- State the key argument this strand makes
+- Note if this cluster is in tension with another cluster (or null if not)
+
+Return ONLY this JSON, no markdown:
+{"clusters":[{"theme":"string","description":"string","papers":["title strings"],"keyArgument":"string","conflictsWith":"string|null"}]}
+
+SYNTHESIS:
+${syn}
+
+PAPERS:
+${paperList}`
+      const raw = await callClaudeLong(prompt, 6000)
+      const parsed = JSON.parse(raw)
+      const clusters = parsed.clusters || []
+      setAnalysis((prev) => ({ ...prev, relatedWorkMapper: clusters }))
+      log(`Related work mapper: identified ${clusters.length} cluster(s)`)
+      setLoading(false)
+      setActivePanel('relatedWorkMapper')
+    } catch (err) {
+      console.error('runRelatedWorkMapper error:', err)
+      setError('Related work mapper failed. Please try again.')
+      setLoading(false)
+    }
+  }
+
   async function runAllModules() {
     setLoading(true)
     setError(null)
@@ -1490,6 +1619,49 @@ ${priorForDiagnostic}`
       })
     }
 
+    if (analysis.methodsPrecedent) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Methods Precedent Finder')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Papers in this corpus using similar methods', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.methodsPrecedent.forEach((p) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(p.relevance || 'unknown').toUpperCase()}] ${p.title} (${p.year})`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(p.methodDescription)] }))
+        if (p.note) children.push(new Paragraph({ children: [new TextRun({ text: 'Note: ', bold: true }), new TextRun(p.note)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.reviewerAnticipator) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Reviewer Anticipator')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Likely reviewer objections and how to address them', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.reviewerAnticipator.forEach((obj, i) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(obj.severity || 'unknown').toUpperCase()}] Objection ${i + 1}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(obj.objection)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Basis: ', bold: true }), new TextRun(obj.basis)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'How to address: ', bold: true }), new TextRun(obj.preemption)] }))
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
+    if (analysis.relatedWorkMapper) {
+      children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun('Related Work Map')] }))
+      children.push(new Paragraph({ children: [new TextRun({ text: 'Thematic clusters for organizing your Related Work section', italics: true })] }))
+      children.push(new Paragraph({ children: [new TextRun('')] }))
+      analysis.relatedWorkMapper.forEach((cluster, i) => {
+        children.push(new Paragraph({ children: [new TextRun({ text: `Cluster ${i + 1}: ${cluster.theme}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun(cluster.description)] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: 'Key argument: ', bold: true }), new TextRun(cluster.keyArgument)] }))
+        if (cluster.conflictsWith) {
+          children.push(new Paragraph({ children: [new TextRun({ text: 'In tension with: ', bold: true }), new TextRun(cluster.conflictsWith)] }))
+        }
+        if (cluster.papers?.length) {
+          children.push(new Paragraph({ children: [new TextRun({ text: 'Papers: ', bold: true }), new TextRun(cluster.papers.join('; '))] }))
+        }
+        children.push(new Paragraph({ children: [new TextRun('')] }))
+      })
+    }
+
     children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: [new TextRun(`Corpus — ${papers.length} papers`)] }))
     papers.forEach((p) => {
       children.push(new Paragraph({
@@ -1553,6 +1725,12 @@ ${priorForDiagnostic}`
     { key: 'synthesis', label: 'Synthesis', color: COLORS.muted },
     { key: 'corpus', label: 'Corpus', color: COLORS.muted, count: papers.length },
     { key: 'log', label: 'Process Log', color: COLORS.muted },
+  ]
+
+  const writingNavItems = [
+    { key: 'methodsPrecedent', label: 'Methods Precedent', color: '#818cf8', count: analysis.methodsPrecedent?.length },
+    { key: 'reviewerAnticipator', label: 'Reviewer Anticipator', color: '#fb7185', count: analysis.reviewerAnticipator?.length },
+    { key: 'relatedWorkMapper', label: 'Related Work Map', color: '#34d399', count: analysis.relatedWorkMapper?.length },
   ]
 
   const moduleButtons = [
@@ -1787,6 +1965,24 @@ ${priorForDiagnostic}`
             </button>
           </div>
         ))}
+
+        <div style={styles.sidebarLabel}>Writing Tools</div>
+        {writingNavItems.map((item) => (
+          <div key={item.key} style={styles.sidebarItem(activePanel === item.key)} onClick={() => setActivePanel(item.key)}>
+            <div style={styles.dot(item.color)} />
+            {item.label}
+            {item.count != null && <span style={styles.badge}>{item.count}</span>}
+          </div>
+        ))}
+        <div style={{ padding: '4px 12px' }}>
+          <button
+            style={{ ...styles.btn('secondary'), width: '100%', fontSize: '11px', padding: '6px 10px' }}
+            onClick={runRelatedWorkMapper}
+            disabled={loading || !papers.length}
+          >
+            {analysis.relatedWorkMapper ? 'done ' : ''}Map Related Work
+          </button>
+        </div>
 
         <div style={styles.sidebarLabel}>Export</div>
         <div style={{ padding: '4px 12px' }}>
@@ -2235,6 +2431,130 @@ ${priorForDiagnostic}`
                       {chain.paperCount} papers connected · {chain.inferenceSteps} inference steps
                     </div>
                   )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activePanel === 'methodsPrecedent' && (
+          <div>
+            <div style={styles.sectionTitle}>Methods Precedent Finder</div>
+            <div style={styles.sectionSub}>Find papers in this corpus that used similar methods — see exactly how they handled the same approach</div>
+            <div style={styles.card}>
+              <div style={styles.label}>Describe your methods</div>
+              <textarea
+                style={{ ...styles.input, height: '90px', resize: 'vertical', marginTop: '6px' }}
+                placeholder="e.g. Tract-based spatial statistics (TBSS) on FA maps, age + sex as covariates, cross-sectional design, n=45 older adults..."
+                value={methodsInput}
+                onChange={(e) => setMethodsInput(e.target.value)}
+              />
+              <button
+                style={{ ...styles.btn('primary'), marginTop: '10px', fontSize: '12px' }}
+                onClick={runMethodsPrecedent}
+                disabled={loading || !papers.length || !methodsInput.trim()}
+              >
+                Find Precedents
+              </button>
+            </div>
+            {analysis.methodsPrecedent && analysis.methodsPrecedent.length === 0 && (
+              <div style={styles.card}>
+                <p style={{ color: COLORS.muted, fontSize: '12px' }}>No close methodological matches found in this corpus. Try broadening your description.</p>
+              </div>
+            )}
+            {analysis.methodsPrecedent && analysis.methodsPrecedent.map((p, i) => (
+              <div key={i} style={{ ...styles.card, marginBottom: '12px', borderLeft: `3px solid ${p.relevance === 'high' ? '#818cf8' : p.relevance === 'medium' ? COLORS.amber : COLORS.muted}` }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
+                  <div style={{ fontFamily: '"Times New Roman", serif', fontSize: '13px', color: COLORS.text, lineHeight: 1.5 }}>{p.title}</div>
+                  <span style={{ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', flexShrink: 0, background: p.relevance === 'high' ? 'rgba(129,140,248,0.15)' : 'rgba(245,166,35,0.12)', color: p.relevance === 'high' ? '#818cf8' : COLORS.amber, border: `1px solid ${p.relevance === 'high' ? '#818cf8' : COLORS.amber}44` }}>{p.relevance}</span>
+                </div>
+                <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px' }}>{p.year}</div>
+                <div style={{ fontSize: '12px', color: COLORS.text, lineHeight: 1.7, marginBottom: '6px' }}>{p.methodDescription}</div>
+                {p.note && (
+                  <div style={{ fontSize: '11px', color: COLORS.muted, borderTop: `1px solid ${COLORS.border}`, paddingTop: '6px', marginTop: '4px' }}>
+                    <span style={{ color: '#818cf8' }}>Note: </span>{p.note}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activePanel === 'reviewerAnticipator' && (
+          <div>
+            <div style={styles.sectionTitle}>Reviewer Anticipator</div>
+            <div style={styles.sectionSub}>Describe your study — get the objections a field-knowledgeable reviewer is likely to raise, and how to address them</div>
+            <div style={styles.card}>
+              <div style={styles.label}>Describe your methods and key findings</div>
+              <textarea
+                style={{ ...styles.input, height: '110px', resize: 'vertical', marginTop: '6px' }}
+                placeholder="e.g. Cross-sectional TBSS study in 45 older adults (65–85), examining FA in major white matter tracts as a predictor of processing speed. Found significant FA reductions in the corpus callosum and SLF correlating with slower RT. Used partial correlation controlling for age, sex, and education..."
+                value={findingsInput}
+                onChange={(e) => setFindingsInput(e.target.value)}
+              />
+              <button
+                style={{ ...styles.btn('primary'), marginTop: '10px', fontSize: '12px' }}
+                onClick={runReviewerAnticipator}
+                disabled={loading || !papers.length || !findingsInput.trim()}
+              >
+                Anticipate Objections
+              </button>
+            </div>
+            {analysis.reviewerAnticipator && analysis.reviewerAnticipator.length === 0 && (
+              <div style={styles.card}>
+                <p style={{ color: COLORS.muted, fontSize: '12px' }}>No specific objections identified. Your study may be well-aligned with current field standards.</p>
+              </div>
+            )}
+            {analysis.reviewerAnticipator && analysis.reviewerAnticipator.map((obj, i) => (
+              <div key={i} style={{ ...styles.card, marginBottom: '12px', borderLeft: `3px solid ${obj.severity === 'major' ? COLORS.red : COLORS.amber}` }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
+                  <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.5 }}>{obj.objection}</div>
+                  <span style={{ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', flexShrink: 0, background: obj.severity === 'major' ? 'rgba(255,95,95,0.12)' : 'rgba(245,166,35,0.12)', color: obj.severity === 'major' ? COLORS.red : COLORS.amber, border: `1px solid ${obj.severity === 'major' ? COLORS.red : COLORS.amber}44` }}>{obj.severity}</span>
+                </div>
+                {obj.source && (
+                  <span style={{ fontSize: '9px', padding: '1px 5px', borderRadius: '3px', background: 'rgba(255,255,255,0.04)', color: COLORS.muted, border: `1px solid ${COLORS.border}`, marginBottom: '8px', display: 'inline-block' }}>{obj.source}</span>
+                )}
+                <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>
+                  <span style={{ color: COLORS.text }}>Basis: </span>{obj.basis}
+                </div>
+                <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, borderTop: `1px solid ${COLORS.border}`, paddingTop: '8px' }}>
+                  <span style={{ color: '#fb7185' }}>How to address: </span>{obj.preemption}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activePanel === 'relatedWorkMapper' && (
+          <div>
+            <div style={styles.sectionTitle}>Related Work Map</div>
+            <div style={styles.sectionSub}>Thematic clusters of the corpus — a skeleton for organizing your Related Work or Introduction section</div>
+            {!analysis.relatedWorkMapper && !loading && (
+              <div style={styles.card}>
+                <p style={{ color: COLORS.muted, fontSize: '12px', lineHeight: 1.8 }}>
+                  Click "Map Related Work" in the sidebar to cluster the corpus into thematic strands.
+                </p>
+              </div>
+            )}
+            {analysis.relatedWorkMapper && analysis.relatedWorkMapper.map((cluster, i) => (
+              <div key={i} style={{ ...styles.card, marginBottom: '12px', borderLeft: `3px solid #34d399` }}>
+                <div style={{ fontSize: '14px', color: '#34d399', fontFamily: '"Times New Roman", serif', lineHeight: 1.4, marginBottom: '6px' }}>{cluster.theme}</div>
+                <div style={{ fontSize: '12px', color: COLORS.text, lineHeight: 1.7, marginBottom: '10px' }}>{cluster.description}</div>
+                <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '10px' }}>
+                  <span style={{ color: COLORS.text }}>Key argument: </span>{cluster.keyArgument}
+                </div>
+                {cluster.conflictsWith && (
+                  <div style={{ fontSize: '11px', color: COLORS.amber, marginBottom: '10px' }}>
+                    ↔ In tension with: {cluster.conflictsWith}
+                  </div>
+                )}
+                <div style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: '8px' }}>
+                  <div style={{ fontSize: '10px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>{cluster.papers?.length || 0} papers</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                    {cluster.papers?.map((title, j) => (
+                      <span key={j} style={{ fontSize: '10px', color: COLORS.muted, background: 'rgba(255,255,255,0.04)', border: `1px solid ${COLORS.border}`, borderRadius: '3px', padding: '2px 6px' }}>{title.length > 60 ? title.slice(0, 60) + '…' : title}</span>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}

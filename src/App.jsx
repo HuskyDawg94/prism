@@ -336,6 +336,16 @@ const confidenceColors = {
   low: COLORS.red,
 }
 
+// Maps a 0-100 confidenceScore to a display color. Buckets are display-only —
+// the underlying number is what gets stored/exported, this just avoids a
+// wall of undifferentiated numbers in the UI.
+function confidenceScoreColor(score) {
+  if (score == null) return COLORS.muted
+  if (score >= 75) return COLORS.accent
+  if (score >= 50) return COLORS.amber
+  return COLORS.red
+}
+
 const methodOptions = [
   'Diffusion MRI / DTI', 'Structural MRI / VBM', 'Functional MRI',
   'EEG / ERP', 'Psychometrics / surveys', 'Cognitive behavioral measures',
@@ -1042,7 +1052,7 @@ Return ONLY this JSON, nothing else:
   async function runAbsenceMapping() {
     await runModule(
       'absenceMapping',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
       'absences',
       'Running absence mapping...'
     )
@@ -1051,7 +1061,7 @@ Return ONLY this JSON, nothing else:
   async function runTensionTopology() {
     await runModule(
       'tensionTopology',
-      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}`,
+      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
       'tensions',
       'Mapping tensions...'
     )
@@ -1060,7 +1070,7 @@ Return ONLY this JSON, nothing else:
   async function runMethodologicalCritique() {
     await runModule(
       'methodologicalCritique',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
       'critiques',
       'Running methodological critique...'
     )
@@ -1081,7 +1091,7 @@ Return ONLY this JSON, nothing else:
       log('Generating hypotheses...')
       const syn = await getOrBuildSummary()
       const hypotheses = await callWithRetry(
-        `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
+        `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Alongside the categorical confidence, also assign a confidenceScore (integer 0-100) reflecting your calibrated confidence that this nudge points toward a genuinely underexplored, tractable direction. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","confidenceScore":0,"tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorAnalysis}`,
         'hypotheses', 6000, syn
       )
       setAnalysis((prev) => ({ ...prev, hypotheses }))
@@ -1447,15 +1457,15 @@ ${paperList}`
     log('Run All: running parallel modules...')
     const [absences, tensions, critiques] = await Promise.all([
       callWithRetry(
-        `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low"}]}`,
+        `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
         'absences', 6000, syn
       ),
       callWithRetry(
-        `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string"}]}`,
+        `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
         'tensions', 6000, syn
       ),
       callWithRetry(
-        `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string"}]}`,
+        `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
         'critiques', 6000, syn
       ),
     ])
@@ -1479,7 +1489,7 @@ ${paperList}`
     ].join('\n\n')
 
     const hypotheses = await callWithRetry(
-      `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`,
+      `Generate hypothesis nudges for a ${researcherProfile.careerStage} researcher studying "${query}" with methods: ${methods} and domains: ${domains}. Nudge toward directions, don't over-specify. Only flag lab-addressable if methods genuinely fit. Alongside the categorical confidence, also assign a confidenceScore (integer 0-100) reflecting your calibrated confidence that this nudge points toward a genuinely underexplored, tractable direction. Return ONLY this JSON, no markdown:\n{"hypotheses":[{"nudge":"string","rationale":"string","labAddressable":true,"methods":["string"],"confidence":"high|medium|low","confidenceScore":0,"tags":["string"]}]}\n\nPRIOR ANALYSIS:\n${priorForHypotheses}`,
       'hypotheses', 6000, syn
     )
     setAnalysis((prev) => ({ ...prev, hypotheses }))
@@ -1599,7 +1609,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'What this field is not studying and why it matters', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.absenceMapping.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.significance || "unknown").toUpperCase()}] ${item.category || ""}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.significance || "unknown").toUpperCase()}] ${item.category || ""}${item.confidenceScore != null ? ` (${item.confidenceScore}% confidence)` : ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun('')] }))
       })
@@ -1610,7 +1620,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'Where and why researchers disagree', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.tensionTopology.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.type || "unknown").toUpperCase()}] ${item.title || ""}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.type || "unknown").toUpperCase()}] ${item.title || ""}${item.confidenceScore != null ? ` (${item.confidenceScore}% confidence)` : ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Root cause: ', bold: true }), new TextRun(item.rootCause)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Resolution: ', bold: true }), new TextRun(item.resolution)] }))
@@ -1623,7 +1633,7 @@ ${priorForDiagnostic}`
       children.push(new Paragraph({ children: [new TextRun({ text: 'Systematic problems in how this field does science', italics: true })] }))
       children.push(new Paragraph({ children: [new TextRun('')] }))
       analysis.methodologicalCritique.forEach((item) => {
-        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.severity || "unknown").toUpperCase()}] ${item.issue || ""}`, bold: true })] }))
+        children.push(new Paragraph({ children: [new TextRun({ text: `[${(item.severity || "unknown").toUpperCase()}] ${item.issue || ""}${item.confidenceScore != null ? ` (${item.confidenceScore}% confidence)` : ""}`, bold: true })] }))
         children.push(new Paragraph({ children: [new TextRun(item.description)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Affected: ', bold: true }), new TextRun(item.affected)] }))
         children.push(new Paragraph({ children: [new TextRun({ text: 'Remedy: ', bold: true }), new TextRun(item.remedy)] }))
@@ -2305,7 +2315,9 @@ ${priorForDiagnostic}`
               <div key={i} style={styles.absenceItem(significanceColors[item.significance])}>
                 <span style={styles.sigBadge(significanceColors[item.significance])}>{item.significance}</span>
                 <div>
-                  <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif' }}>{item.category}</div>
+                  <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif' }}>{item.category}{item.confidenceScore != null && (
+                      <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px', marginLeft: '8px' }}>{item.confidenceScore}% confidence</span>
+                    )}</div>
                   <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}>{item.description}</div>
                 </div>
               </div>
@@ -2328,7 +2340,12 @@ ${priorForDiagnostic}`
             <div style={styles.sectionSub}>Where and why researchers disagree</div>
             {analysis.tensionTopology.map((item, i) => (
               <div key={i} style={styles.tensionCard(tensionColors[item.type])}>
-                <div style={styles.typeTag(tensionColors[item.type])}>{item.type}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={styles.typeTag(tensionColors[item.type])}>{item.type}</div>
+                  {item.confidenceScore != null && (
+                    <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidenceScore}% confidence</span>
+                  )}
+                </div>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '6px', fontFamily: '"Times New Roman", serif' }}>{item.title}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>{item.description}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}><span style={{ color: COLORS.text }}>Root cause: </span>{item.rootCause}</div>
@@ -2353,7 +2370,12 @@ ${priorForDiagnostic}`
             <div style={styles.sectionSub}>Systematic problems in how this field does science</div>
             {analysis.methodologicalCritique.map((item, i) => (
               <div key={i} style={styles.tensionCard(severityColors[item.severity])}>
-                <div style={styles.typeTag(severityColors[item.severity])}>{item.severity}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={styles.typeTag(severityColors[item.severity])}>{item.severity}</div>
+                  {item.confidenceScore != null && (
+                    <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidenceScore}% confidence</span>
+                  )}
+                </div>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '6px', fontFamily: '"Times New Roman", serif' }}>{item.issue}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>{item.description}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}><span style={{ color: COLORS.text }}>Affected: </span>{item.affected}</div>
@@ -2383,6 +2405,9 @@ ${priorForDiagnostic}`
                     <span style={{ fontSize: '10px', color: COLORS.accent, border: `1px solid ${COLORS.accent}`, padding: '2px 7px', borderRadius: '4px' }}>lab-addressable</span>
                   )}
                   <span style={{ fontSize: '10px', color: confidenceColors[item.confidence], border: `1px solid ${confidenceColors[item.confidence]}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidence} confidence</span>
+                  {item.confidenceScore != null && (
+                    <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidenceScore}%</span>
+                  )}
                 </div>
                 <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.8, marginBottom: '8px' }}>{item.nudge}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}><span style={{ color: COLORS.text }}>Rationale: </span>{item.rationale}</div>

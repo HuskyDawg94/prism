@@ -381,6 +381,7 @@ if (typeof document !== 'undefined' && !document.getElementById('prism-styles'))
 }
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://prism-backend-8ac5.onrender.com'
+const REPORTER_YEARS_SPAN = 12 // must match backend REPORTER_YEARS_BACK
 
 export default function App() {
   const [stage, setStage] = useState(() => {
@@ -949,6 +950,36 @@ Return ONLY this JSON, nothing else:
     }
   }
 
+  // ── NIH funding context (Absence Mapping support) ───────────────────────
+  // Asks the backend to summarize NIH RePORTER award activity for the query
+  // topic — a field with heavy publication volume but thin or declining
+  // funding is itself a structural absence worth surfacing. Returns null on
+  // any failure so the module still runs without this extra context.
+  async function fetchFundingContext(searchQuery) {
+    try {
+      const res = await fetch(`${BACKEND}/api/reporter/search?term=${encodeURIComponent(searchQuery)}`)
+      if (!res.ok) return null
+      return await res.json()
+    } catch (e) {
+      log(`NIH RePORTER fetch failed: ${e.message}`)
+      return null
+    }
+  }
+
+  function formatFundingBlock(funding) {
+    if (!funding || !funding.byYear) return null
+    const years = Object.keys(funding.byYear).map(Number).sort((a, b) => a - b)
+    if (years.length === 0) return `FUNDING CONTEXT:\nNo NIH-funded projects matching "${funding.term}" were found in NIH RePORTER over the last ${REPORTER_YEARS_SPAN} fiscal years. This may indicate a genuine funding gap for this topic, or that it is funded outside NIH.`
+    const recentHalf = years.slice(Math.ceil(years.length / 2))
+    const earlyHalf = years.slice(0, Math.floor(years.length / 2))
+    const recentTotal = recentHalf.reduce((s, y) => s + funding.byYear[y].totalAward, 0)
+    const earlyTotal = earlyHalf.reduce((s, y) => s + funding.byYear[y].totalAward, 0)
+    const trend = recentTotal > earlyTotal * 1.15 ? 'increasing' : recentTotal < earlyTotal * 0.85 ? 'declining' : 'flat'
+    const yearLines = years.map((y) => `${y}: ${funding.byYear[y].count} awards, $${Math.round(funding.byYear[y].totalAward).toLocaleString()}`).join('; ')
+    const instLines = Object.entries(funding.byInstitute || {}).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k} (${v})`).join(', ')
+    return `FUNDING CONTEXT:\nNIH RePORTER shows ${funding.totalProjects} funded project(s) matching "${funding.term}" across the queried fiscal years, with a ${trend} funding trend in the most recent half of the window. By year: ${yearLines}. Top funding institutes: ${instLines}. When identifying absences, consider whether any gap you flag is a funding gap (understudied because underfunded) versus a purely conceptual gap the field hasn't recognized.`
+  }
+
   function formatClusterBlock(graph) {
     if (!graph || !graph.clusters) return ''
     const multiPaperClusters = graph.clusters.filter((c) => c.length > 1)
@@ -1146,9 +1177,11 @@ Return ONLY this JSON, nothing else:
   }
 
   async function runAbsenceMapping() {
+    const funding = await fetchFundingContext(query)
+    const fundingBlock = formatFundingBlock(funding)
     await runModule(
       'absenceMapping',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate.${fundingBlock ? `\n\n${fundingBlock}` : ''} Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
       'absences',
       'Running absence mapping...'
     )

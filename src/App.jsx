@@ -406,6 +406,10 @@ export default function App() {
     return saved ? JSON.parse(saved) : {}
   })
   const [summary, setSummary] = useState(() => localStorage.getItem('prism_summary') || '')
+  // Deterministic GRIM/statcheck-style flags from the last Methodological
+  // Critique run — session-only (not localStorage-persisted), since it's
+  // cheap to recompute and tied to the current paper set.
+  const [statConsistencyFlags, setStatConsistencyFlags] = useState(null)
   const [loading, setLoading] = useState(false)
   const [loadingMessage, setLoadingMessage] = useState('')
   const [error, setError] = useState(null)
@@ -966,6 +970,37 @@ Return ONLY this JSON, nothing else:
     }
   }
 
+  // ── Statistical-consistency check (Methodological Critique support) ────
+  // Deterministic, non-LLM GRIM + statcheck-style check run over the
+  // corpus's already-fetched abstract text. Returns null on any failure so
+  // the module still runs without this extra signal.
+  async function fetchStatConsistencyFlags(paperList) {
+    try {
+      const payload = paperList
+        .filter((p) => p.abstract && p.abstract !== 'No abstract available')
+        .map((p) => ({ id: p.id, title: p.title, text: p.abstract }))
+      if (payload.length === 0) return null
+      const res = await fetch(`${BACKEND}/api/statcheck/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ papers: payload }),
+      })
+      if (!res.ok) return null
+      return await res.json()
+    } catch (e) {
+      log(`Statistical-consistency check failed: ${e.message}`)
+      return null
+    }
+  }
+
+  function formatStatFlagsBlock(statResult) {
+    if (!statResult || statResult.flaggedCount === 0) return null
+    const lines = statResult.flagged.map(
+      (f) => `"${f.title}": ${f.flags.map((fl) => `[${fl.checkType}] ${fl.detail}`).join(' ')}`
+    )
+    return `STATISTICAL-CONSISTENCY FLAGS (deterministic GRIM/statcheck-style check, not an LLM judgment):\n${lines.join('\n')}\nThese are mechanical arithmetic/test-statistic consistency flags on abstract-level text only — surface them as a distinct, separately-labeled flag type in your critique, not folded into your qualitative assessment, and do not treat them as confirmed errors.`
+  }
+
   function formatFundingBlock(funding) {
     if (!funding || !funding.byYear) return null
     const years = Object.keys(funding.byYear).map(Number).sort((a, b) => a - b)
@@ -1199,9 +1234,12 @@ Return ONLY this JSON, nothing else:
   }
 
   async function runMethodologicalCritique() {
+    const statResult = await fetchStatConsistencyFlags(papers)
+    const statBlock = formatStatFlagsBlock(statResult)
+    setStatConsistencyFlags(statResult)
     await runModule(
       'methodologicalCritique',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature. Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature.${statBlock ? `\n\n${statBlock}` : ''} Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
       'critiques',
       'Running methodological critique...'
     )
@@ -2555,6 +2593,26 @@ ${priorForDiagnostic}`
                 )}
               </div>
             ))}
+            {statConsistencyFlags && statConsistencyFlags.flaggedCount > 0 && (
+              <div style={{ marginTop: '20px' }}>
+                <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif' }}>
+                  Statistical-consistency flags ({statConsistencyFlags.flaggedCount} of {statConsistencyFlags.totalChecked} papers checked)
+                </div>
+                <p style={{ color: COLORS.muted, fontSize: '11px', marginBottom: '10px', lineHeight: 1.6 }}>
+                  Deterministic arithmetic/test-statistic consistency checks (GRIM, statcheck-style) on abstract text — not an LLM judgment, and not a claim that an error exists. Worth checking against the source.
+                </p>
+                {statConsistencyFlags.flagged.map((f, i) => (
+                  <div key={i} style={styles.tensionCard(COLORS.amber)}>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginBottom: '6px' }}>{f.title}</div>
+                    {f.flags.map((fl, j) => (
+                      <div key={j} style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.6, marginBottom: '4px' }}>
+                        <span style={{ color: COLORS.amber }}>[{fl.checkType}]</span> {fl.detail}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

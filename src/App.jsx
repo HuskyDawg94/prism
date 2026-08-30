@@ -436,6 +436,13 @@ export default function App() {
   // route; the modules run exactly as before when this is empty.
   const [protocolDraft, setProtocolDraft] = useState(() => localStorage.getItem('prism_protocol_draft') || '')
   const [showProtocolMode, setShowProtocolMode] = useState(false)
+  // Peer-Reviewer Companion mode: distinct from Protocol/Aims Critique —
+  // takes a submitted manuscript's own text, checks its own reported
+  // numbers with the statistical-consistency checker, and evaluates its
+  // novelty claim against this sub-field's Absence Mapping output.
+  // Explicitly NOT run automatically (per architecture spec) — a separate
+  // opt-in panel under Writing Tools, invoked manually.
+  const [manuscriptInput, setManuscriptInput] = useState(() => localStorage.getItem('prism_manuscript_input') || '')
   const [findingsInput, setFindingsInput] = useState(() => localStorage.getItem('prism_findings_input') || '')
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
@@ -459,6 +466,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
   useEffect(() => { localStorage.setItem('prism_methods_input', methodsInput) }, [methodsInput])
   useEffect(() => { localStorage.setItem('prism_protocol_draft', protocolDraft) }, [protocolDraft])
+  useEffect(() => { localStorage.setItem('prism_manuscript_input', manuscriptInput) }, [manuscriptInput])
   useEffect(() => { localStorage.setItem('prism_findings_input', findingsInput) }, [findingsInput])
   useEffect(() => { fetchQuota() }, [])
 
@@ -1591,6 +1599,59 @@ ${priorAnalysis ? `PRIOR FIELD ANALYSIS:\n${priorAnalysis}` : ''}`
     }
   }
 
+  // ── Peer-Reviewer Companion mode ────────────────────────────────────────
+  // Explicitly separate from the default flow (per architecture spec) —
+  // only runs when the researcher pastes their own manuscript and clicks
+  // this specific action. Two checks against the manuscript itself:
+  // (1) the statistical-consistency checker (GRIM/statcheck-style) run
+  //     directly on the manuscript's own reported numbers, not corpus
+  //     papers — same backend endpoint, same "mechanical flag, not a
+  //     confirmed error" framing;
+  // (2) whether the manuscript's novelty claim holds up against this
+  //     sub-field's Absence Mapping output (run first, if not already run).
+  async function runPeerReviewerCompanion() {
+    if (!manuscriptInput.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      setLoadingMessage('Checking manuscript statistics...')
+      log('Peer-reviewer companion: running statistical-consistency check on manuscript...')
+      const statResult = await fetchStatConsistencyFlags([{ id: 'manuscript', title: 'Submitted manuscript', abstract: manuscriptInput }])
+
+      setLoadingMessage('Cross-checking novelty claim against Absence Mapping...')
+      const syn = await getOrBuildSummary()
+      const absenceBlock = analysis.absenceMapping
+        ? `EXISTING ABSENCE MAPPING FOR THIS SUB-FIELD:\n${analysis.absenceMapping.map((a) => `- [${a.significance}] ${a.category}: ${a.description}`).join('\n')}`
+        : 'No Absence Mapping has been run yet for this corpus — evaluate the novelty claim against the synthesis below only, and note that a full Absence Mapping run would sharpen this assessment.'
+      const statBlock = formatStatFlagsBlock(statResult)
+
+      const prompt = `You are a peer reviewer evaluating a submitted manuscript's novelty claim against the literature on "${query}".
+
+MANUSCRIPT TEXT (as submitted by the researcher):
+${manuscriptInput.slice(0, 6000)}
+
+Your task: evaluate whether this manuscript's implicit or stated novelty claim holds up. Does it actually address a gap this field's literature has, per the synthesis and absence-mapping evidence below? Or does it overstate its novelty relative to what has already been published? Be specific and cite what in the corpus supports or undermines the claim.${statBlock ? `\n\n${statBlock}` : ''}
+
+Return ONLY this JSON, no markdown:
+{"noveltyAssessment":{"verdict":"supported|overstated|partially-supported","reasoning":"string"},"claims":[{"claim":"string — a specific claim from the manuscript","assessment":"string","evidenceBasis":"string — what in the corpus/absence-mapping evidence supports this assessment"}]}
+
+SYNTHESIS:
+${syn}
+
+${absenceBlock}`
+      const raw = await callClaudeLong(prompt, 5000)
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      setAnalysis((prev) => ({ ...prev, peerReviewerCompanion: { ...parsed, statFlags: statResult } }))
+      log(`Peer-reviewer companion: novelty verdict "${parsed.noveltyAssessment?.verdict}", ${statResult?.flaggedCount || 0} statistical flag(s) on manuscript text`)
+      setLoading(false)
+      setActivePanel('peerReviewerCompanion')
+    } catch (err) {
+      console.error('runPeerReviewerCompanion error:', err)
+      setError('Peer-reviewer companion failed. Please try again.')
+      setLoading(false)
+    }
+  }
+
   async function runRelatedWorkMapper() {
     setLoading(true)
     setError(null)
@@ -1999,6 +2060,7 @@ ${priorForDiagnostic}`
     { key: 'methodsPrecedent', label: 'Methods Precedent', color: '#818cf8', count: analysis.methodsPrecedent?.length },
     { key: 'reviewerAnticipator', label: 'Reviewer Anticipator', color: '#fb7185', count: analysis.reviewerAnticipator?.length },
     { key: 'relatedWorkMapper', label: 'Related Work Map', color: '#34d399', count: analysis.relatedWorkMapper?.length },
+    { key: 'peerReviewerCompanion', label: 'Peer-Reviewer Companion', color: '#f472b6' },
   ]
 
   const moduleButtons = [
@@ -2916,6 +2978,80 @@ ${priorForDiagnostic}`
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {activePanel === 'peerReviewerCompanion' && (
+          <div>
+            <div style={styles.sectionTitle}>Peer-Reviewer Companion</div>
+            <div style={styles.sectionSub}>Not run automatically — paste your own manuscript to check its novelty claim against this field's Absence Mapping and flag statistical-consistency issues in its own reported numbers</div>
+            <div style={styles.card}>
+              <div style={styles.label}>Paste your manuscript text (or the sections with your novelty claim and key statistics)</div>
+              <textarea
+                style={{ ...styles.input, height: '140px', resize: 'vertical', marginTop: '6px' }}
+                placeholder="Paste your manuscript's introduction, results, and discussion (or the relevant excerpts)..."
+                value={manuscriptInput}
+                onChange={(e) => setManuscriptInput(e.target.value)}
+              />
+              <button
+                style={{ ...styles.btn('primary'), marginTop: '10px', fontSize: '12px' }}
+                onClick={runPeerReviewerCompanion}
+                disabled={loading || !papers.length || !manuscriptInput.trim()}
+              >
+                Check Manuscript
+              </button>
+              {!analysis.absenceMapping && (
+                <p style={{ color: COLORS.muted, fontSize: '11px', marginTop: '8px' }}>
+                  Absence Mapping hasn't been run for this corpus yet — running it first will sharpen the novelty-claim assessment below.
+                </p>
+              )}
+            </div>
+            {analysis.peerReviewerCompanion && (
+              <>
+                <div style={{ ...styles.card, marginBottom: '12px', borderLeft: `3px solid ${
+                  analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'overstated' ? COLORS.red :
+                  analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'partially-supported' ? COLORS.amber : COLORS.accent
+                }` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '13px', color: COLORS.text, fontFamily: '"Times New Roman", serif' }}>Novelty claim verdict:</span>
+                    <span style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.04em', padding: '2px 8px', borderRadius: '4px', border: `1px solid ${
+                      analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'overstated' ? COLORS.red :
+                      analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'partially-supported' ? COLORS.amber : COLORS.accent
+                    }`, color:
+                      analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'overstated' ? COLORS.red :
+                      analysis.peerReviewerCompanion.noveltyAssessment?.verdict === 'partially-supported' ? COLORS.amber : COLORS.accent
+                    }}>{analysis.peerReviewerCompanion.noveltyAssessment?.verdict}</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}>{analysis.peerReviewerCompanion.noveltyAssessment?.reasoning}</div>
+                </div>
+                {(analysis.peerReviewerCompanion.claims || []).map((c, i) => (
+                  <div key={i} style={{ ...styles.card, marginBottom: '10px' }}>
+                    <div style={{ fontSize: '12px', color: COLORS.text, marginBottom: '6px', fontFamily: '"Times New Roman", serif' }}>{c.claim}</div>
+                    <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '4px' }}>{c.assessment}</div>
+                    <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.6, borderTop: `1px solid ${COLORS.border}`, paddingTop: '6px' }}>
+                      <span style={{ color: COLORS.text }}>Evidence: </span>{c.evidenceBasis}
+                    </div>
+                  </div>
+                ))}
+                {analysis.peerReviewerCompanion.statFlags && analysis.peerReviewerCompanion.statFlags.flaggedCount > 0 && (
+                  <div style={{ marginTop: '16px' }}>
+                    <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif' }}>
+                      Statistical-consistency flags on your manuscript's own numbers
+                    </div>
+                    <p style={{ color: COLORS.muted, fontSize: '11px', marginBottom: '10px', lineHeight: 1.6 }}>
+                      Deterministic arithmetic/test-statistic consistency checks (GRIM, statcheck-style) — not an LLM judgment, and not a claim that an error exists. Worth double-checking before submission.
+                    </p>
+                    {analysis.peerReviewerCompanion.statFlags.flagged.flatMap((f) => f.flags).map((fl, j) => (
+                      <div key={j} style={styles.tensionCard(COLORS.amber)}>
+                        <div style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.6 }}>
+                          <span style={{ color: COLORS.amber }}>[{fl.checkType}]</span> {fl.detail}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 

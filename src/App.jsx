@@ -417,6 +417,10 @@ export default function App() {
   const [quota, setQuota] = useState(null) // { limitUsd, usedUsd, remainingUsd, resetAt }
   const [showByokPrompt, setShowByokPrompt] = useState(false)
   const [byokInput, setByokInput] = useState('')
+  // Self-critique: opt-in, off by default. It roughly doubles the LLM cost of
+  // whichever module runs (a second "skeptic" pass challenges every finding
+  // from the first pass), so it's a deliberate choice, not silent overhead.
+  const [selfCritiqueEnabled, setSelfCritiqueEnabled] = useState(() => localStorage.getItem('prism_self_critique') === 'true')
   const [selectedDatabases, setSelectedDatabases] = useState({ pubmed: true, openalex: false, semanticscholar: false, europepmc: false })
   const [dbWeights, setDbWeights] = useState({ pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
   const [methodsInput, setMethodsInput] = useState(() => localStorage.getItem('prism_methods_input') || '')
@@ -1029,6 +1033,45 @@ Return ONLY this JSON, nothing else:
     }
   }
 
+  // Which field on a finding holds its main claim text, per module — used to
+  // build the skeptic prompt below. Only modules with a self-critique pass
+  // wired up need an entry here.
+  const critiqueFieldByModule = {
+    absenceMapping: { claim: 'category', support: 'description' },
+    tensionTopology: { claim: 'title', support: 'rootCause' },
+    methodologicalCritique: { claim: 'issue', support: 'description' },
+  }
+
+  // Adversarial self-critique: a second "skeptic" pass that argues against
+  // each finding from the first pass, using the same corpus context. Opt-in
+  // (selfCritiqueEnabled) because it roughly doubles the LLM cost of the
+  // module it runs against. Findings that don't survive are NOT dropped —
+  // they're flagged `challenged: true` with the counter-argument attached,
+  // so the user sees the disagreement rather than a silently thinner result.
+  async function runSelfCritique(moduleKey, findings, synthesis) {
+    const fields = critiqueFieldByModule[moduleKey]
+    if (!fields || !findings?.length) return findings
+
+    log('Running self-critique pass...')
+    const claimList = findings.map((f, i) => `${i}. ${f[fields.claim]}: ${f[fields.support] || ''}`).join('\n')
+    const skepticPrompt = `You are a skeptical peer reviewer. Below is a numbered list of findings from an earlier analysis pass over the same literature corpus. For EACH numbered finding, argue against it as rigorously as you can — look for evidence in the corpus that contradicts it, an alternative explanation, or a reason it's overstated or not actually verifiable. Then decide whether the finding survives your critique. Return ONLY this JSON, no markdown, with one entry per input index in the same order:\n{"critiques":[{"index":0,"survives":true,"counterArgument":"string — your strongest objection, or a brief note if you find none"}]}\n\nFINDINGS:\n${claimList}`
+
+    try {
+      const critiques = await callWithRetry(skepticPrompt, 'critiques', 6000, synthesis)
+      const byIndex = new Map(critiques.map((c) => [c.index, c]))
+      log('Self-critique pass complete')
+      return findings.map((f, i) => {
+        const c = byIndex.get(i)
+        if (!c) return f
+        return { ...f, challenged: !c.survives, counterArgument: c.counterArgument }
+      })
+    } catch (e) {
+      console.error('runSelfCritique error:', e)
+      log('Self-critique pass failed — showing first-pass findings unchallenged')
+      return findings
+    }
+  }
+
   async function runModule(moduleKey, promptFn, parseKey, successMsg) {
     setLoading(true)
     setError(null)
@@ -1037,7 +1080,11 @@ Return ONLY this JSON, nothing else:
       log(successMsg)
       const syn = await getOrBuildSummary()
       // Pass synthesis separately so cached endpoint can cache it
-      const result = await callWithRetry(promptFn(), parseKey, 6000, syn)
+      let result = await callWithRetry(promptFn(), parseKey, 6000, syn)
+      if (selfCritiqueEnabled) {
+        setLoadingMessage(`${successMsg} — running self-critique...`)
+        result = await runSelfCritique(moduleKey, result, syn)
+      }
       setAnalysis((prev) => ({ ...prev, [moduleKey]: result }))
       log(`${successMsg} complete`)
       setLoading(false)
@@ -1455,7 +1502,7 @@ ${paperList}`
     // Step 2: Absence mapping, tension topology, methodological critique in parallel
     setLoadingMessage('Running absence mapping, tension topology, method critique...')
     log('Run All: running parallel modules...')
-    const [absences, tensions, critiques] = await Promise.all([
+    let [absences, tensions, critiques] = await Promise.all([
       callWithRetry(
         `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate. Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
         'absences', 6000, syn
@@ -1469,6 +1516,16 @@ ${paperList}`
         'critiques', 6000, syn
       ),
     ])
+
+    if (selfCritiqueEnabled) {
+      setLoadingMessage('Running self-critique on absence mapping, tension topology, method critique...')
+      log('Run All: running self-critique pass on parallel modules...')
+      ;[absences, tensions, critiques] = await Promise.all([
+        runSelfCritique('absenceMapping', absences, syn),
+        runSelfCritique('tensionTopology', tensions, syn),
+        runSelfCritique('methodologicalCritique', critiques, syn),
+      ])
+    }
 
     setAnalysis((prev) => ({
       ...prev,
@@ -2042,6 +2099,21 @@ ${priorForDiagnostic}`
         ))}
 
         <div style={styles.sidebarLabel}>Run Modules</div>
+        <div style={{ padding: '4px 12px 8px', display: 'flex', alignItems: 'flex-start', gap: '6px' }}>
+          <input
+            type="checkbox"
+            id="self-critique-toggle"
+            checked={selfCritiqueEnabled}
+            onChange={(e) => {
+              setSelfCritiqueEnabled(e.target.checked)
+              localStorage.setItem('prism_self_critique', e.target.checked ? 'true' : 'false')
+            }}
+            style={{ marginTop: '2px' }}
+          />
+          <label htmlFor="self-critique-toggle" style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.5, cursor: 'pointer' }}>
+            Self-critique pass (Absence/Tension/Method Critique) — roughly doubles cost for these modules
+          </label>
+        </div>
         {moduleButtons.map((m) => (
           <div key={m.label} style={{ padding: '4px 12px' }}>
             <button
@@ -2317,8 +2389,13 @@ ${priorForDiagnostic}`
                 <div>
                   <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '4px', fontFamily: '"Times New Roman", serif' }}>{item.category}{item.confidenceScore != null && (
                       <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px', marginLeft: '8px' }}>{item.confidenceScore}% confidence</span>
+                    )}{item.challenged && (
+                      <span style={{ fontSize: '10px', color: COLORS.red, border: `1px solid ${COLORS.red}`, padding: '2px 7px', borderRadius: '4px', marginLeft: '8px' }}>challenged</span>
                     )}</div>
                   <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}>{item.description}</div>
+                  {item.counterArgument && (
+                    <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
+                  )}
                 </div>
               </div>
             ))}
@@ -2345,11 +2422,17 @@ ${priorForDiagnostic}`
                   {item.confidenceScore != null && (
                     <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidenceScore}% confidence</span>
                   )}
+                  {item.challenged && (
+                    <span style={{ fontSize: '10px', color: COLORS.red, border: `1px solid ${COLORS.red}`, padding: '2px 7px', borderRadius: '4px' }}>challenged</span>
+                  )}
                 </div>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '6px', fontFamily: '"Times New Roman", serif' }}>{item.title}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>{item.description}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}><span style={{ color: COLORS.text }}>Root cause: </span>{item.rootCause}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginTop: '4px' }}><span style={{ color: COLORS.text }}>Resolution: </span>{item.resolution}</div>
+                {item.counterArgument && (
+                  <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
+                )}
               </div>
             ))}
           </div>
@@ -2375,11 +2458,17 @@ ${priorForDiagnostic}`
                   {item.confidenceScore != null && (
                     <span style={{ fontSize: '10px', color: confidenceScoreColor(item.confidenceScore), border: `1px solid ${confidenceScoreColor(item.confidenceScore)}`, padding: '2px 7px', borderRadius: '4px' }}>{item.confidenceScore}% confidence</span>
                   )}
+                  {item.challenged && (
+                    <span style={{ fontSize: '10px', color: COLORS.red, border: `1px solid ${COLORS.red}`, padding: '2px 7px', borderRadius: '4px' }}>challenged</span>
+                  )}
                 </div>
                 <div style={{ fontSize: '13px', color: COLORS.text, marginBottom: '6px', fontFamily: '"Times New Roman", serif' }}>{item.issue}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>{item.description}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7 }}><span style={{ color: COLORS.text }}>Affected: </span>{item.affected}</div>
                 <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginTop: '4px' }}><span style={{ color: COLORS.text }}>Remedy: </span>{item.remedy}</div>
+                {item.counterArgument && (
+                  <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
+                )}
               </div>
             ))}
           </div>

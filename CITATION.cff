@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use PRISM in your work, please cite it using the metadata below."
+title: "PRISM: Pattern Recognition and Insight through Systemic Mapping"
+abstract: >-
+  PRISM is an open-source web tool that runs AI-assisted analysis on PubMed
+  literature across five modules -- Absence Mapping, Tension Topology,
+  Methodological Critique, Hypothesis Nudges, and Field Diagnostic -- to help
+  researchers see not just what a body of literature reports, but what it is
+  missing.
+type: software
+authors:
+  - family-names: Westring
+    given-names: Casey
+version: 0.2.0
+date-released: "2026-08-30"
+license: MIT
+repository-code: "https://github.com/HuskyDawg94/prism"
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22169819
+    description: Archival DOI for this software release (Zenodo)
+keywords:
+  - literature review
+  - systematic review
+  - research synthesis
+  - AI-assisted analysis
+  - PubMed

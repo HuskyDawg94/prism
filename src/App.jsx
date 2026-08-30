@@ -443,6 +443,14 @@ export default function App() {
   // Explicitly NOT run automatically (per architecture spec) — a separate
   // opt-in panel under Writing Tools, invoked manually.
   const [manuscriptInput, setManuscriptInput] = useState(() => localStorage.getItem('prism_manuscript_input') || '')
+  // Funder/Program-Officer View mode: a funder's own award portfolio
+  // (fetched live via /api/reporter/awards for a PI/org/topic, or pasted
+  // manually as topic/year/dollar rows) cross-referenced against this
+  // topic area's Absence Mapping output.
+  const [funderPi, setFunderPi] = useState('')
+  const [funderOrg, setFunderOrg] = useState('')
+  const [funderAwards, setFunderAwards] = useState(null) // { pi, org, topic, totalAwards, awards } from live fetch
+  const [funderAwardsPasted, setFunderAwardsPasted] = useState(() => localStorage.getItem('prism_funder_awards_pasted') || '')
   const [findingsInput, setFindingsInput] = useState(() => localStorage.getItem('prism_findings_input') || '')
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
@@ -467,6 +475,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prism_methods_input', methodsInput) }, [methodsInput])
   useEffect(() => { localStorage.setItem('prism_protocol_draft', protocolDraft) }, [protocolDraft])
   useEffect(() => { localStorage.setItem('prism_manuscript_input', manuscriptInput) }, [manuscriptInput])
+  useEffect(() => { localStorage.setItem('prism_funder_awards_pasted', funderAwardsPasted) }, [funderAwardsPasted])
   useEffect(() => { localStorage.setItem('prism_findings_input', findingsInput) }, [findingsInput])
   useEffect(() => { fetchQuota() }, [])
 
@@ -1027,6 +1036,88 @@ Return ONLY this JSON, nothing else:
       (f) => `"${f.title}": ${f.flags.map((fl) => `[${fl.checkType}] ${fl.detail}`).join(' ')}`
     )
     return `STATISTICAL-CONSISTENCY FLAGS (deterministic GRIM/statcheck-style check, not an LLM judgment):\n${lines.join('\n')}\nThese are mechanical arithmetic/test-statistic consistency flags on abstract-level text only — surface them as a distinct, separately-labeled flag type in your critique, not folded into your qualitative assessment, and do not treat them as confirmed errors.`
+  }
+
+  // ── Funder/Program-Officer View mode ────────────────────────────────────
+  async function fetchFunderAwards(pi, org, topic) {
+    try {
+      const params = new URLSearchParams()
+      if (pi.trim()) params.set('pi', pi.trim())
+      if (org.trim()) params.set('org', org.trim())
+      if (topic.trim()) params.set('topic', topic.trim())
+      const res = await fetch(`${BACKEND}/api/reporter/awards?${params.toString()}`)
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.message || `Request failed (${res.status})`)
+      }
+      return await res.json()
+    } catch (e) {
+      log(`Funder awards fetch failed: ${e.message}`)
+      throw e
+    }
+  }
+
+  // Parses pasted "topic | year | amount" or "topic, year, amount" rows —
+  // a lightweight fallback for funders without NIH RePORTER data (private
+  // foundations, non-NIH agencies) per the architecture spec's "pasted or
+  // fetched live" plug-in point.
+  function parsePastedAwards(text) {
+    return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const parts = line.split(/\||,/).map((p) => p.trim())
+      return { title: parts[0] || 'Untitled award', year: parts[1] || 'Unknown', amount: parts[2] ? Number(parts[2].replace(/[^0-9.]/g, '')) || 0 : 0 }
+    })
+  }
+
+  async function runFunderView() {
+    setLoading(true)
+    setError(null)
+    try {
+      let awardsData = funderAwards
+      if (!awardsData && (funderPi.trim() || funderOrg.trim())) {
+        setLoadingMessage('Fetching award portfolio from NIH RePORTER...')
+        awardsData = await fetchFunderAwards(funderPi, funderOrg, query)
+        setFunderAwards(awardsData)
+      }
+      const awardsList = awardsData ? awardsData.awards : parsePastedAwards(funderAwardsPasted)
+      if (!awardsList || awardsList.length === 0) {
+        setError('No awards to analyze. Enter a PI/organization to fetch from NIH RePORTER, or paste award rows manually.')
+        setLoading(false)
+        return
+      }
+      setLoadingMessage('Cross-referencing portfolio against field gaps...')
+      log(`Funder view: analyzing ${awardsList.length} award(s) against absence mapping for "${query}"...`)
+      const syn = await getOrBuildSummary()
+      const absenceBlock = analysis.absenceMapping
+        ? `ABSENCE MAPPING FOR THIS TOPIC AREA:\n${analysis.absenceMapping.map((a) => `- [${a.significance}] ${a.category}: ${a.description}`).join('\n')}`
+        : 'No Absence Mapping has been run yet for this corpus — run it first for a sharper cross-reference; for now, evaluate against the synthesis only.'
+      const portfolioBlock = awardsList.slice(0, 100).map((a) => `- ${a.title} (${a.year}, $${Number(a.amount).toLocaleString()})`).join('\n')
+
+      const prompt = `You are advising a research funder / program officer on portfolio strategy for the topic area "${query}".
+
+THE FUNDER'S OWN PAST AWARDS IN OR NEAR THIS AREA:
+${portfolioBlock}
+
+Your task: cross-reference this funder's own award portfolio against the field-wide gaps identified below. For each gap the field's absence mapping identifies, note whether the funder's portfolio is already funding work that addresses it, or is also silent on it (i.e. the funder's spending mirrors the field's blind spot rather than counteracting it). Also flag if the portfolio is unusually concentrated on questions the field has already answered well.
+
+Return ONLY this JSON, no markdown:
+{"portfolioGaps":[{"gap":"string — the field-wide gap","fundedStatus":"funded|unfunded|partially-funded","evidence":"string — which awards (if any) address this, or why the portfolio is silent on it","recommendation":"string"}]}
+
+SYNTHESIS:
+${syn}
+
+${absenceBlock}`
+      const raw = await callClaudeLong(prompt, 5000)
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim())
+      const portfolioGaps = parsed.portfolioGaps || []
+      setAnalysis((prev) => ({ ...prev, funderView: portfolioGaps }))
+      log(`Funder view: identified ${portfolioGaps.length} portfolio-gap assessment(s)`)
+      setLoading(false)
+      setActivePanel('funderView')
+    } catch (err) {
+      console.error('runFunderView error:', err)
+      setError(err.message || 'Funder view analysis failed. Please try again.')
+      setLoading(false)
+    }
   }
 
   function formatFundingBlock(funding) {
@@ -2061,6 +2152,7 @@ ${priorForDiagnostic}`
     { key: 'reviewerAnticipator', label: 'Reviewer Anticipator', color: '#fb7185', count: analysis.reviewerAnticipator?.length },
     { key: 'relatedWorkMapper', label: 'Related Work Map', color: '#34d399', count: analysis.relatedWorkMapper?.length },
     { key: 'peerReviewerCompanion', label: 'Peer-Reviewer Companion', color: '#f472b6' },
+    { key: 'funderView', label: 'Funder View', color: '#a3e635', count: analysis.funderView?.length },
   ]
 
   const moduleButtons = [
@@ -3052,6 +3144,59 @@ ${priorForDiagnostic}`
                 )}
               </>
             )}
+          </div>
+        )}
+
+        {activePanel === 'funderView' && (
+          <div>
+            <div style={styles.sectionTitle}>Funder / Program-Officer View</div>
+            <div style={styles.sectionSub}>Cross-reference a funder's own award portfolio against this topic area's Absence Mapping — is the funder's spending also silent on the field's gaps?</div>
+            <div style={styles.card}>
+              <div style={styles.label}>Fetch live from NIH RePORTER (PI name and/or organization)</div>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+                <input style={{ ...styles.input, flex: 1 }} placeholder="PI last name (optional)" value={funderPi} onChange={(e) => { setFunderPi(e.target.value); setFunderAwards(null) }} />
+                <input style={{ ...styles.input, flex: 1 }} placeholder="Organization name (optional)" value={funderOrg} onChange={(e) => { setFunderOrg(e.target.value); setFunderAwards(null) }} />
+              </div>
+              <div style={{ fontSize: '11px', color: COLORS.muted, margin: '10px 0 4px' }}>— or —</div>
+              <div style={styles.label}>Paste award rows manually (one per line: title | year | amount)</div>
+              <textarea
+                style={{ ...styles.input, height: '80px', resize: 'vertical', marginTop: '6px' }}
+                placeholder="e.g. Longitudinal cognitive aging in diverse cohorts | 2023 | 450000"
+                value={funderAwardsPasted}
+                onChange={(e) => setFunderAwardsPasted(e.target.value)}
+              />
+              <button
+                style={{ ...styles.btn('primary'), marginTop: '10px', fontSize: '12px' }}
+                onClick={runFunderView}
+                disabled={loading || !papers.length || (!funderPi.trim() && !funderOrg.trim() && !funderAwardsPasted.trim())}
+              >
+                Analyze Portfolio
+              </button>
+              {!analysis.absenceMapping && (
+                <p style={{ color: COLORS.muted, fontSize: '11px', marginTop: '8px' }}>
+                  Absence Mapping hasn't been run for this corpus yet — running it first will sharpen this cross-reference.
+                </p>
+              )}
+              {funderAwards && (
+                <p style={{ color: COLORS.muted, fontSize: '11px', marginTop: '8px' }}>
+                  Fetched {funderAwards.awards.length} of {funderAwards.totalAwards} award(s){funderAwards.truncated ? ' (truncated to first 200)' : ''} from NIH RePORTER.
+                </p>
+              )}
+            </div>
+            {analysis.funderView && analysis.funderView.map((g, i) => (
+              <div key={i} style={{ ...styles.card, marginBottom: '10px', borderLeft: `3px solid ${
+                g.fundedStatus === 'unfunded' ? COLORS.red : g.fundedStatus === 'partially-funded' ? COLORS.amber : COLORS.accent
+              }` }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
+                  <div style={{ fontSize: '13px', color: COLORS.text, lineHeight: 1.5, fontFamily: '"Times New Roman", serif' }}>{g.gap}</div>
+                  <span style={{ fontSize: '9px', padding: '2px 6px', borderRadius: '3px', flexShrink: 0, textTransform: 'uppercase', color: g.fundedStatus === 'unfunded' ? COLORS.red : g.fundedStatus === 'partially-funded' ? COLORS.amber : COLORS.accent, border: `1px solid ${g.fundedStatus === 'unfunded' ? COLORS.red : g.fundedStatus === 'partially-funded' ? COLORS.amber : COLORS.accent}` }}>{g.fundedStatus}</span>
+                </div>
+                <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, marginBottom: '8px' }}>{g.evidence}</div>
+                <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.7, borderTop: `1px solid ${COLORS.border}`, paddingTop: '8px' }}>
+                  <span style={{ color: COLORS.text }}>Recommendation: </span>{g.recommendation}
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

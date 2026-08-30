@@ -429,6 +429,13 @@ export default function App() {
   const [selectedDatabases, setSelectedDatabases] = useState({ pubmed: true, openalex: false, semanticscholar: false, europepmc: false })
   const [dbWeights, setDbWeights] = useState({ pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
   const [methodsInput, setMethodsInput] = useState(() => localStorage.getItem('prism_methods_input') || '')
+  // Protocol/Aims Critique mode: when non-empty, the three core modules
+  // (Absence Mapping, Tension Topology, Methodological Critique) append an
+  // instruction to evaluate their findings specifically against this draft.
+  // This is a prompt-framing addition only — no new module, no new backend
+  // route; the modules run exactly as before when this is empty.
+  const [protocolDraft, setProtocolDraft] = useState(() => localStorage.getItem('prism_protocol_draft') || '')
+  const [showProtocolMode, setShowProtocolMode] = useState(false)
   const [findingsInput, setFindingsInput] = useState(() => localStorage.getItem('prism_findings_input') || '')
   const summaryBuildRef = useRef(null)
   const [researcherProfile, setResearcherProfile] = useState(() => {
@@ -451,6 +458,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prism_summary', summary) }, [summary])
   useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
   useEffect(() => { localStorage.setItem('prism_methods_input', methodsInput) }, [methodsInput])
+  useEffect(() => { localStorage.setItem('prism_protocol_draft', protocolDraft) }, [protocolDraft])
   useEffect(() => { localStorage.setItem('prism_findings_input', findingsInput) }, [findingsInput])
   useEffect(() => { fetchQuota() }, [])
 
@@ -970,6 +978,18 @@ Return ONLY this JSON, nothing else:
     }
   }
 
+  // ── Protocol/Aims Critique mode ─────────────────────────────────────────
+  // When the researcher pastes a draft protocol/aims/proposal instead of
+  // just running a general field query, the three core modules (Absence
+  // Mapping, Tension Topology, Methodological Critique) get an added
+  // instruction to evaluate their findings against that specific draft —
+  // reusing 100% of existing module/prompt logic, no new analysis code or
+  // backend route.
+  function formatProtocolInstruction(moduleLabel) {
+    if (!protocolDraft.trim()) return ''
+    return `\n\nThe researcher has also provided a draft protocol/aims/proposal below. In addition to your normal ${moduleLabel} analysis of the corpus, evaluate this draft specifically: for each item you identify, note whether the draft's stated design already addresses it, is vulnerable to it, or is silent on it. Do not soften your analysis to flatter the draft — the goal is to find what it's missing.\n\nDRAFT TO EVALUATE:\n${protocolDraft.trim().slice(0, 4000)}`
+  }
+
   // ── Statistical-consistency check (Methodological Critique support) ────
   // Deterministic, non-LLM GRIM + statcheck-style check run over the
   // corpus's already-fetched abstract text. Returns null on any failure so
@@ -1214,9 +1234,10 @@ Return ONLY this JSON, nothing else:
   async function runAbsenceMapping() {
     const funding = await fetchFundingContext(query)
     const fundingBlock = formatFundingBlock(funding)
+    const protocolInstruction = formatProtocolInstruction('absence mapping')
     await runModule(
       'absenceMapping',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate.${fundingBlock ? `\n\n${fundingBlock}` : ''} Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", perform absence mapping. Identify what is conspicuously NOT being studied — underrepresented populations, absent methodological approaches, ignored theoretical angles, missing longitudinal questions, cross-disciplinary connections nobody is making. For each absence, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this is a genuine, verifiable absence in the field's literature — not a stylistic hedge, an actual calibrated estimate.${fundingBlock ? `\n\n${fundingBlock}` : ''}${protocolInstruction} Return ONLY this JSON, no markdown:\n{"absences":[{"category":"string","description":"string","significance":"high|medium|low","confidenceScore":0}]}`,
       'absences',
       'Running absence mapping...'
     )
@@ -1225,9 +1246,10 @@ Return ONLY this JSON, nothing else:
   async function runTensionTopology() {
     const clusterGraph = await fetchCitationClusters(papers)
     const clusterBlock = formatClusterBlock(clusterGraph)
+    const protocolInstruction = formatProtocolInstruction('tension topology')
     await runModule(
       'tensionTopology',
-      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict.${clusterBlock ? `\n\n${clusterBlock}` : ''} Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
+      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict.${clusterBlock ? `\n\n${clusterBlock}` : ''}${protocolInstruction} Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
       'tensions',
       'Mapping tensions...'
     )
@@ -1237,9 +1259,10 @@ Return ONLY this JSON, nothing else:
     const statResult = await fetchStatConsistencyFlags(papers)
     const statBlock = formatStatFlagsBlock(statResult)
     setStatConsistencyFlags(statResult)
+    const protocolInstruction = formatProtocolInstruction('methodological critique')
     await runModule(
       'methodologicalCritique',
-      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature.${statBlock ? `\n\n${statBlock}` : ''} Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
+      () => `Based on the synthesis of ${papers.length} papers on "${query}", identify systematic methodological problems. Rate severity as critical, moderate, or minor. For each critique, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this methodological problem is genuinely present and verifiable in the cited literature.${statBlock ? `\n\n${statBlock}` : ''}${protocolInstruction} Return ONLY this JSON, no markdown:\n{"critiques":[{"issue":"string","description":"string","severity":"critical|moderate|minor","affected":"string","remedy":"string","confidenceScore":0}]}`,
       'critiques',
       'Running methodological critique...'
     )
@@ -2119,6 +2142,38 @@ ${priorForDiagnostic}`
               )}
             </div>
 
+            <div style={{ marginTop: '20px' }}>
+              <div
+                onClick={() => setShowProtocolMode((v) => !v)}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', userSelect: 'none' }}
+              >
+                <span style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                  {showProtocolMode ? '▾' : '▸'} Protocol / Aims Critique mode (optional)
+                </span>
+                {protocolDraft.trim() && !showProtocolMode && (
+                  <span style={{ fontSize: '10px', color: COLORS.accent, border: `1px solid ${COLORS.accent}`, padding: '1px 6px', borderRadius: '4px' }}>draft loaded</span>
+                )}
+              </div>
+              {showProtocolMode && (
+                <div style={{ marginTop: '10px' }}>
+                  <p style={{ fontSize: '11px', color: COLORS.muted, lineHeight: 1.6, marginBottom: '8px' }}>
+                    Paste a draft aims page, protocol, or proposal. Absence Mapping, Tension Topology, and Methodological Critique will evaluate their findings against this draft specifically, in addition to their normal field-wide analysis.
+                  </p>
+                  <textarea
+                    style={{ ...styles.input, height: '110px', resize: 'vertical' }}
+                    placeholder="Paste your draft aims/protocol text here..."
+                    value={protocolDraft}
+                    onChange={(e) => setProtocolDraft(e.target.value)}
+                  />
+                  {protocolDraft.trim() && (
+                    <button style={{ ...styles.btn('secondary'), marginTop: '6px', fontSize: '11px' }} onClick={() => setProtocolDraft('')}>
+                      Clear draft
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
               <button style={styles.btn('secondary')} onClick={() => setStage('onboarding')}>Profile</button>
               <button
@@ -2184,6 +2239,11 @@ ${priorForDiagnostic}`
         <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', alignItems: 'center' }}>
           <span style={styles.pill(true)}>{papers.length} papers</span>
           <span style={styles.pill(true)}>{proposedTerms.length} queries</span>
+          {protocolDraft.trim() && (
+            <span style={{ ...styles.pill(true), color: COLORS.accent }} title="Absence Mapping, Tension Topology, and Methodological Critique will evaluate your draft against the corpus">
+              protocol mode active
+            </span>
+          )}
           {quota && !byokKey && (
             <span
               style={{ ...styles.pill(quota.remainingUsd > 0), cursor: 'pointer' }}

@@ -370,7 +370,7 @@ if (typeof document !== 'undefined' && !document.getElementById('prism-styles'))
   document.head.appendChild(style)
 }
 
-const BACKEND = 'https://prism-backend-8ac5.onrender.com'
+const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://prism-backend-8ac5.onrender.com'
 
 export default function App() {
   const [stage, setStage] = useState(() => {
@@ -401,6 +401,12 @@ export default function App() {
   const [paperCount, setPaperCount] = useState(30)
   const [processLog, setProcessLog] = useState([])
   const [sessionCost, setSessionCost] = useState(0)
+  // BYOK key: session-only (React state), never persisted to localStorage —
+  // an API key surviving a page reload on a shared machine is a real exposure.
+  const [byokKey, setByokKey] = useState('')
+  const [quota, setQuota] = useState(null) // { limitUsd, usedUsd, remainingUsd, resetAt }
+  const [showByokPrompt, setShowByokPrompt] = useState(false)
+  const [byokInput, setByokInput] = useState('')
   const [selectedDatabases, setSelectedDatabases] = useState({ pubmed: true, openalex: false, semanticscholar: false, europepmc: false })
   const [dbWeights, setDbWeights] = useState({ pubmed: 8, openalex: 6, semanticscholar: 5, europepmc: 4 })
   const [methodsInput, setMethodsInput] = useState(() => localStorage.getItem('prism_methods_input') || '')
@@ -427,6 +433,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prism_profile', JSON.stringify(researcherProfile)) }, [researcherProfile])
   useEffect(() => { localStorage.setItem('prism_methods_input', methodsInput) }, [methodsInput])
   useEffect(() => { localStorage.setItem('prism_findings_input', findingsInput) }, [findingsInput])
+  useEffect(() => { fetchQuota() }, [])
 
   function clearSession() {
     localStorage.clear()
@@ -472,10 +479,38 @@ export default function App() {
     return { methods, domains }
   }
 
+  // Poll the backend for remaining free-tier quota. Called on mount and after
+  // every Claude call so the UI stays current.
+  async function fetchQuota() {
+    try {
+      const response = await fetch(`${BACKEND}/api/usage`)
+      if (!response.ok) return
+      const data = await response.json()
+      setQuota(data)
+    } catch {
+      // Non-critical — quota display just stays stale/hidden.
+    }
+  }
+
+  // Shared headers for Claude-calling requests: attaches the user's own key
+  // once they've supplied one (session-only, not persisted).
+  function claudeHeaders() {
+    const headers = { 'Content-Type': 'application/json' }
+    if (byokKey) headers['X-User-Api-Key'] = byokKey
+    return headers
+  }
+
+  // If the backend reports the free tier is exhausted (429) and no BYOK key
+  // is set yet, surface the prompt instead of failing silently.
+  function handleQuotaExhausted(data) {
+    setShowByokPrompt(true)
+    throw new Error(data.message || 'Free-tier usage limit reached. Provide your own Anthropic API key to continue.')
+  }
+
   async function callClaude(prompt, maxTokens = 2000) {
     const response = await fetch(`${BACKEND}/api/claude`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: claudeHeaders(),
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: maxTokens,
@@ -483,6 +518,7 @@ export default function App() {
       }),
     })
     const data = await response.json()
+    if (response.status === 429 && data.error === 'free_tier_exhausted') handleQuotaExhausted(data)
     if (!response.ok || data.error || !data.content?.[0]?.text) {
       throw new Error(data.error?.message || data.error || `API error ${response.status}`)
     }
@@ -491,6 +527,7 @@ export default function App() {
       const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
       setSessionCost((prev) => prev + cost)
     }
+    fetchQuota()
     return data.content[0].text
   }
 
@@ -498,13 +535,14 @@ export default function App() {
   async function callHaiku(prompt, maxTokens = 2000) {
     const response = await fetch(`${BACKEND}/api/claude/haiku`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: claudeHeaders(),
       body: JSON.stringify({
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
     const data = await response.json()
+    if (response.status === 429 && data.error === 'free_tier_exhausted') handleQuotaExhausted(data)
     // Haiku: $0.25/MTok input, $1.25/MTok output
     if (data.usage) {
       const cost = (data.usage.input_tokens / 1_000_000) * 0.25 + (data.usage.output_tokens / 1_000_000) * 1.25
@@ -513,6 +551,7 @@ export default function App() {
     if (!response.ok || data.error || !data.content?.[0]?.text) {
       throw new Error(data.error?.message || data.error || `Haiku API error ${response.status}`)
     }
+    fetchQuota()
     return data.content[0].text
   }
 
@@ -520,10 +559,11 @@ export default function App() {
   async function callClaudeCached(synthesis, prompt, maxTokens = 6000) {
     const response = await fetch(`${BACKEND}/api/claude/cached`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: claudeHeaders(),
       body: JSON.stringify({ synthesis, prompt, max_tokens: maxTokens }),
     })
     const data = await response.json()
+    if (response.status === 429 && data.error === 'free_tier_exhausted') handleQuotaExhausted(data)
     // Cached input: $0.30/MTok (90% discount), write: $3.75/MTok, output: $15/MTok
     if (data.usage) {
       const inputCost = ((data.usage.cache_read_input_tokens || 0) / 1_000_000) * 0.30
@@ -535,6 +575,7 @@ export default function App() {
     if (!response.ok || data.error || !data.content?.[0]?.text) {
       throw new Error(data.error?.message || data.error || `Cached API error ${response.status}`)
     }
+    fetchQuota()
     const text = data.content[0].text
     return text
   }
@@ -543,7 +584,7 @@ export default function App() {
   async function callClaudeLong(prompt, maxTokens = 8000) {
     const response = await fetch(`${BACKEND}/api/claude/long`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: claudeHeaders(),
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: maxTokens,
@@ -551,6 +592,7 @@ export default function App() {
       }),
     })
     const data = await response.json()
+    if (response.status === 429 && data.error === 'free_tier_exhausted') handleQuotaExhausted(data)
     if (!response.ok || data.error || !data.content?.[0]?.text) {
       throw new Error(data.error?.message || data.error || `Long API error ${response.status}`)
     }
@@ -558,6 +600,7 @@ export default function App() {
       const cost = (data.usage.input_tokens / 1_000_000) * 3 + (data.usage.output_tokens / 1_000_000) * 15
       setSessionCost((prev) => prev + cost)
     }
+    fetchQuota()
     return data.content[0].text
   }
 
@@ -1949,9 +1992,31 @@ ${priorForDiagnostic}`
           </svg>
           <input style={styles.searchInput} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search topic..." />
         </div>
-        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+        <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto', alignItems: 'center' }}>
           <span style={styles.pill(true)}>{papers.length} papers</span>
           <span style={styles.pill(true)}>{proposedTerms.length} queries</span>
+          {quota && !byokKey && (
+            <span
+              style={{ ...styles.pill(quota.remainingUsd > 0), cursor: 'pointer' }}
+              title="Free-tier usage remaining today. Click to add your own API key."
+              onClick={() => setShowByokPrompt(true)}
+            >
+              ${quota.remainingUsd.toFixed(2)} free tier left
+            </span>
+          )}
+          {byokKey && (
+            <span style={{ ...styles.pill(true), color: COLORS.accent }} title="Using your own API key">
+              own key active
+            </span>
+          )}
+          <a
+            href="https://github.com/sponsors/HuskyDawg94"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ ...styles.pill(false), textDecoration: 'none', color: COLORS.purple }}
+          >
+            ♥ support PRISM
+          </a>
           <span style={styles.pill(false)}>{researcherProfile.name || 'Researcher'}</span>
         </div>
       </div>
@@ -2662,6 +2727,62 @@ ${priorForDiagnostic}`
           </div>
         )}
       </div>
+
+      {showByokPrompt && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+          }}
+          onClick={() => setShowByokPrompt(false)}
+        >
+          <div
+            style={{ ...styles.card, maxWidth: '420px', width: '90%', background: COLORS.surface2 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '15px', color: COLORS.text, marginBottom: '8px', fontWeight: 600 }}>
+              {byokKey ? 'Using your own API key' : "Today's free tier is used up"}
+            </div>
+            <div style={{ fontSize: '12px', color: COLORS.muted, lineHeight: 1.6, marginBottom: '14px' }}>
+              PRISM covers a limited amount of analysis per day for free. To keep going right
+              now, add your own Anthropic API key — it's used only for your requests this
+              session, sent directly to Anthropic, and never stored or logged by PRISM's
+              server. Get a key at{' '}
+              <a href="https://console.anthropic.com/" target="_blank" rel="noopener noreferrer" style={{ color: COLORS.blue }}>
+                console.anthropic.com
+              </a>.
+            </div>
+            <input
+              type="password"
+              value={byokInput}
+              onChange={(e) => setByokInput(e.target.value)}
+              placeholder="sk-ant-..."
+              style={{ ...styles.searchInput, width: '100%', marginBottom: '10px', border: `1px solid ${COLORS.border2}`, borderRadius: '6px', padding: '8px 10px' }}
+            />
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              {byokKey && (
+                <button
+                  style={styles.btn('secondary')}
+                  onClick={() => { setByokKey(''); setByokInput(''); setShowByokPrompt(false) }}
+                >
+                  Remove key
+                </button>
+              )}
+              <button style={styles.btn('secondary')} onClick={() => setShowByokPrompt(false)}>
+                Cancel
+              </button>
+              <button
+                style={styles.btn('primary')}
+                disabled={!byokInput.trim()}
+                onClick={() => { setByokKey(byokInput.trim()); setShowByokPrompt(false) }}
+              >
+                Use this key
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Analytics />
     </div>
   )

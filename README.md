@@ -81,6 +81,12 @@ npm install
 npm run dev
 ```
 
+To point the frontend at a local backend instead of the hosted one, create a `.env` file:
+```
+VITE_BACKEND_URL=http://localhost:3001
+```
+(If unset, it falls back to the hosted backend at useprism.net's production URL.)
+
 ### Backend
 
 ```bash
@@ -91,15 +97,17 @@ npm install
 Create a `.env` file:
 ```
 ANTHROPIC_API_KEY=your_key_here
-NCBI_API_KEY=your_key_here  # optional
+NCBI_API_KEY=your_key_here            # optional
 PORT=3001
+ALLOWED_ORIGINS=http://localhost:5173 # comma-separated list; defaults to useprism.net + local dev ports
+FREE_TIER_DAILY_LIMIT_USD=1.5         # per-IP daily free-tier cap before BYOK is required
+CLAUDE_RATE_LIMIT_PER_HOUR=40         # per-IP hourly cap on Claude-calling routes
+PROXY_RATE_LIMIT_PER_HOUR=300         # per-IP hourly cap on PubMed/Semantic Scholar proxy routes
 ```
 
 ```bash
 node server.js
 ```
-
-Update `BACKEND` in `src/App.jsx` to point to `http://localhost:3001` for local development.
 
 ---
 
@@ -156,7 +164,7 @@ When you use PRISM, your research topic and retrieved paper abstracts are sent t
 - **Anthropic API** — processes your query and abstracts to generate search terms and all analysis outputs
 - **PubMed, OpenAlex, Semantic Scholar, Europe PMC** — bibliographic databases that return publicly available paper metadata and abstracts
 
-PRISM does not have a backend database. No user data, search queries, or analysis results are stored on PRISM's servers. All session data is stored in your browser's localStorage only.
+PRISM does not have a backend database. No search queries, analysis results, or researcher profile data are stored on PRISM's servers — all session data lives in your browser's localStorage only. The backend does keep an in-memory, per-IP daily usage counter (to enforce the free-tier limit and prevent abuse); it resets daily, is discarded on server restart, and is never linked to search content. See the [Privacy Policy](https://useprism.net/privacy) for details.
 
 Your researcher profile (name, institution, methods) is stored locally in your browser and is sent to Anthropic's API only when generating hypothesis nudges. It is not stored anywhere else.
 

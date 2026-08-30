@@ -65,8 +65,11 @@ export default function Privacy() {
           <p style={{ marginBottom: '8px' }}>
             <span style={{ color: COLORS.text }}>Your researcher profile</span> (name, institution, career stage, methods, domains) is stored only in your browser's localStorage. It never leaves your device unless you submit it as part of a search query to generate hypothesis nudges, in which case it is sent to Anthropic's API along with the synthesis.
           </p>
-          <p>
+          <p style={{ marginBottom: '8px' }}>
             <span style={{ color: COLORS.text }}>Analysis results and synthesis text</span> are stored only in your browser's localStorage. PRISM does not have a database. We do not store your searches, your analysis outputs, or any personally identifying information on our servers.
+          </p>
+          <p>
+            <span style={{ color: COLORS.text }}>Your IP address</span> is used server-side to enforce a daily free-usage limit and prevent abuse. This is kept only as an in-memory running total (IP address paired with an estimated dollar amount used that day) — it is not written to a database, is cleared automatically each day, and is discarded entirely on server restart. It is not linked to your search content, researcher profile, or analysis results in any way.
           </p>
         </Section>
 
@@ -89,7 +92,7 @@ export default function Privacy() {
         </Section>
 
         <Section title="Data retention">
-          All session data — your researcher profile, search queries, papers, and analysis outputs — is stored in your browser's localStorage and persists until you clear it using the "Clear Session" button in PRISM or clear your browser's localStorage manually. PRISM's servers retain no user data between sessions.
+          All session data — your researcher profile, search queries, papers, and analysis outputs — is stored in your browser's localStorage and persists until you clear it using the "Clear Session" button in PRISM or clear your browser's localStorage manually. PRISM's servers retain no search content, analysis output, or profile data between sessions. The only server-side state is the in-memory per-IP usage counter described above, which resets daily and does not survive a server restart.
         </Section>
 
         <Section title="Institutional and enterprise use">

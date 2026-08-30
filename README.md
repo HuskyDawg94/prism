@@ -98,6 +98,7 @@ Create a `.env` file:
 ```
 ANTHROPIC_API_KEY=your_key_here
 NCBI_API_KEY=your_key_here            # optional
+OPENALEX_API_KEY=your_key_here        # required for OpenAlex search + citation-network (free at openalex.org/settings/api)
 PORT=3001
 ALLOWED_ORIGINS=http://localhost:5173 # comma-separated list; defaults to useprism.net + local dev ports
 FREE_TIER_DAILY_LIMIT_USD=1.5         # per-IP daily free-tier cap before BYOK is required

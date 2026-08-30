@@ -664,10 +664,17 @@ Return ONLY this JSON, nothing else:
   }
 
   // ── OpenAlex fetcher ─────────────────────────────────────────────────────
+  // Routed through the backend proxy (`/api/openalex/works`) rather than
+  // calling api.openalex.org directly — OpenAlex requires an api_key on
+  // every request as of Feb 2026, and that key must stay server-side.
   async function fetchOpenAlex(term, count) {
     try {
-      const url = `https://api.openalex.org/works?search=${encodeURIComponent(term)}&per-page=${Math.min(count, 50)}&filter=has_abstract:true&select=id,title,authorships,publication_year,primary_location,abstract_inverted_index`
-      const res = await fetch(url, { headers: { 'User-Agent': 'PRISM/1.0 (mailto:u1469338@utah.edu)' } })
+      const url = `${BACKEND}/api/openalex/works?search=${encodeURIComponent(term)}&per-page=${Math.min(count, 50)}&filter=has_abstract:true&select=id,title,authorships,publication_year,primary_location,abstract_inverted_index`
+      const res = await fetch(url)
+      if (!res.ok) {
+        log(`OpenAlex fetch failed for "${term}": HTTP ${res.status}`)
+        return []
+      }
       const data = await res.json()
       return (data.results || []).map((w) => {
         // Reconstruct abstract from inverted index
@@ -679,14 +686,16 @@ Return ONLY this JSON, nothing else:
           }
           abstract = Object.keys(words).sort((a,b) => a-b).map(k => words[k]).join(' ')
         }
+        const openalexId = w.id?.replace('https://openalex.org/', '')
         return {
-          id: `oa_${w.id?.replace('https://openalex.org/', '')}`,
+          id: `oa_${openalexId}`,
           title: w.title || 'Untitled',
           authors: w.authorships?.slice(0,3).map(a => a.author?.display_name).filter(Boolean).join(', '),
           year: String(w.publication_year || ''),
           source: w.primary_location?.source?.display_name || 'Unknown',
           searchTerm: term,
           database: 'OpenAlex',
+          openalexId,
           abstract,
           fullText: abstract,
         }
@@ -904,10 +913,50 @@ Return ONLY this JSON, nothing else:
             source: paper.source,
             searchTerm: term,
             database: 'PubMed',
+            pmid: id,
             pmcid: pmcEntry ? pmcEntry.value.replace('PMC', '') : null,
           }
         })
     } catch { return [] }
+  }
+
+  // ── Citation-network clustering (Tension Topology support) ─────────────
+  // Asks the backend to resolve corpus papers to OpenAlex works and group
+  // them into citation-connected components restricted to this corpus. Used
+  // to flag when Tension Topology's disagreement is actually two literatures
+  // that don't cite each other, vs. genuine disagreement within one
+  // literature. Returns null on any failure so callers can degrade
+  // gracefully (the module still runs, just without this extra context).
+  async function fetchCitationClusters(paperList) {
+    try {
+      const payload = paperList.map((p) => ({
+        id: p.id,
+        label: p.title?.slice(0, 80) || p.id,
+        database: p.database,
+        pmid: p.pmid,
+        openalexId: p.openalexId,
+      }))
+      const res = await fetch(`${BACKEND}/api/citations/graph`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ papers: payload }),
+      })
+      if (!res.ok) return null
+      return await res.json()
+    } catch (e) {
+      log(`Citation clustering failed: ${e.message}`)
+      return null
+    }
+  }
+
+  function formatClusterBlock(graph) {
+    if (!graph || !graph.clusters) return ''
+    const multiPaperClusters = graph.clusters.filter((c) => c.length > 1)
+    if (multiPaperClusters.length < 2) return '' // only meaningful if the corpus actually splits
+    const lines = multiPaperClusters.map(
+      (c, i) => `Cluster ${i + 1} (${c.length} papers): ${c.slice(0, 6).join('; ')}${c.length > 6 ? '; ...' : ''}`
+    )
+    return `DISCONNECTED CLUSTERS:\nThe following groups of papers in this corpus cite within their own group but not across groups, based on citation-graph analysis of ${graph.resolvedCount}/${graph.totalCount} resolvable papers:\n${lines.join('\n')}\nWhen classifying tensions, consider whether an apparent disagreement is actually between these citation-disconnected clusters (i.e. two literatures that don't engage each other) rather than a genuine argument within one literature.`
   }
 
   async function runSearch() {
@@ -1106,9 +1155,11 @@ Return ONLY this JSON, nothing else:
   }
 
   async function runTensionTopology() {
+    const clusterGraph = await fetchCitationClusters(papers)
+    const clusterBlock = formatClusterBlock(clusterGraph)
     await runModule(
       'tensionTopology',
-      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict. Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
+      () => `Based on the synthesis of the literature on "${query}", identify where and WHY researchers disagree. Classify each tension as empirical, definitional, methodological, or theoretical. For each tension, also assign a confidenceScore (integer 0-100) reflecting how confident you are that this disagreement is real and verifiable in the cited literature, not an inferred or overstated conflict.${clusterBlock ? `\n\n${clusterBlock}` : ''} Return ONLY this JSON, no markdown:\n{"tensions":[{"title":"string","description":"string","rootCause":"string","type":"empirical|definitional|methodological|theoretical","resolution":"string","confidenceScore":0}]}`,
       'tensions',
       'Mapping tensions...'
     )

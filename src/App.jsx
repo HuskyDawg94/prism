@@ -381,7 +381,77 @@ if (typeof document !== 'undefined' && !document.getElementById('prism-styles'))
 }
 
 const BACKEND = import.meta.env.VITE_BACKEND_URL || 'https://prism-backend-8ac5.onrender.com'
+
+// Community verification loop (Feature 9): a random client-generated id,
+// persisted in localStorage, used ONLY to let the backend collapse repeat
+// votes from the same browser into one vote per finding. It is never an
+// account identity and is never sent anywhere except this vote endpoint.
+function getSessionMarker() {
+  let marker = localStorage.getItem('prism_session_marker')
+  if (!marker) {
+    marker = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    localStorage.setItem('prism_session_marker', marker)
+  }
+  return marker
+}
+
+async function submitFeedback(field, module, findingText, vote) {
+  try {
+    const res = await fetch(`${BACKEND}/api/feedback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, module, findingText, vote, sessionMarker: getSessionMarker() }),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
 const REPORTER_YEARS_SPAN = 12 // must match backend REPORTER_YEARS_BACK
+
+// Community verification loop (Feature 9): a lightweight vote widget, three
+// buttons and nothing else -- no free-text field in v1, per the
+// architecture spec's abuse-avoidance note. Fully optional: not showing up
+// or not being clicked has zero effect on any analysis. Votes are
+// internal-only -- there is no user-facing "N people voted" display here,
+// consistent with the checkpoint decision to use this data to recalibrate
+// confidence scores rather than show aggregated counts back to users.
+function FeedbackVote({ field, module, findingText }) {
+  const [voted, setVoted] = useState(null)
+  const [sending, setSending] = useState(false)
+
+  async function vote(choice) {
+    if (sending || voted) return
+    setSending(true)
+    const ok = await submitFeedback(field, module, findingText, choice)
+    setSending(false)
+    if (ok) setVoted(choice)
+  }
+
+  const btnStyle = (active) => ({
+    fontSize: '10px',
+    padding: '3px 8px',
+    borderRadius: '4px',
+    border: `1px solid ${active ? COLORS.accent : COLORS.border}`,
+    color: active ? COLORS.accent : COLORS.muted,
+    background: 'transparent',
+    cursor: voted ? 'default' : 'pointer',
+    opacity: voted && !active ? 0.35 : 1,
+  })
+
+  if (voted) {
+    return <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '8px' }}>Thanks — recorded as "{voted.replace('_', ' ')}".</div>
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '10px', paddingTop: '8px', borderTop: `1px solid ${COLORS.border}` }}>
+      <span style={{ fontSize: '10px', color: COLORS.muted, marginRight: '2px' }}>Is this right?</span>
+      <button style={btnStyle(false)} onClick={() => vote('confirmed_novel')} disabled={sending}>Genuinely novel</button>
+      <button style={btnStyle(false)} onClick={() => vote('already_known')} disabled={sending}>Already known</button>
+      <button style={btnStyle(false)} onClick={() => vote('incorrect')} disabled={sending}>Incorrect</button>
+    </div>
+  )
+}
 
 export default function App() {
   const [stage, setStage] = useState(() => {
@@ -2732,6 +2802,7 @@ ${priorForDiagnostic}`
                   {item.counterArgument && (
                     <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
                   )}
+                  <FeedbackVote field={query} module="absenceMapping" findingText={`${item.category}: ${item.description}`} />
                 </div>
               </div>
             ))}
@@ -2769,6 +2840,7 @@ ${priorForDiagnostic}`
                 {item.counterArgument && (
                   <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
                 )}
+                <FeedbackVote field={query} module="tensionTopology" findingText={`${item.title}: ${item.description}`} />
               </div>
             ))}
           </div>
@@ -2805,6 +2877,7 @@ ${priorForDiagnostic}`
                 {item.counterArgument && (
                   <div style={{ fontSize: '11px', color: COLORS.red, lineHeight: 1.6, marginTop: '6px', paddingLeft: '8px', borderLeft: `2px solid ${COLORS.red}44` }}><span style={{ color: COLORS.text }}>Skeptic's objection: </span>{item.counterArgument}</div>
                 )}
+                <FeedbackVote field={query} module="methodologicalCritique" findingText={`${item.issue}: ${item.description}`} />
               </div>
             ))}
             {statConsistencyFlags && statConsistencyFlags.flaggedCount > 0 && (
@@ -2860,6 +2933,7 @@ ${priorForDiagnostic}`
                   {item.tags?.map((t, j) => <span key={j} style={styles.tag}>{t}</span>)}
                   {item.methods?.map((m, j) => <span key={j} style={{ ...styles.tag, borderColor: COLORS.accent + '44', color: COLORS.accent + 'aa' }}>{m}</span>)}
                 </div>
+                <FeedbackVote field={query} module="hypotheses" findingText={item.nudge} />
               </div>
             ))}
           </div>
